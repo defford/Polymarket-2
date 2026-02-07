@@ -479,6 +479,19 @@ class TradingEngine:
             logger.debug(f"Trade blocked: {reason}")
             return
 
+        # ─── NEW: Price Ceiling Check ───
+        # Prevent buying the top. Don't enter if price is > 80c.
+        max_entry = config.risk.max_entry_price
+        current_price = 0.5
+        if signal.recommended_side == Side.UP:
+            current_price = market.up_price if market.up_price else 0.5
+        elif signal.recommended_side == Side.DOWN:
+            current_price = market.down_price if market.down_price else 0.5
+
+        if current_price > max_entry:
+            logger.info(f"🚫 Trade Skipped: Price {current_price:.2f} exceeds max entry {max_entry:.2f}")
+            return
+
         # Determine position size
         position_size = risk_manager.get_position_size()
 

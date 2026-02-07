@@ -163,16 +163,16 @@ def compute_layer2_signal(
         "1d": config.btc_ema_1d,
     }
 
-    # ─── REBALANCED WEIGHTS: Short TFs dominate for 15-min markets ───
-    # 1m/5m/15m = 65% of signal (these actually move in 15 min)
-    # 1h/4h/1d  = 35% (trend context / confirmation bias)
+    # ─── REBALANCED WEIGHTS: 15m & 1h dominate ───
+    # We prioritize the trend on the 15m and 1h charts.
+    # If these two don't align, we shouldn't trade.
     tf_weights = {
-        "1m": 0.15,
-        "5m": 0.25,
-        "15m": 0.25,
-        "1h": 0.15,
-        "4h": 0.10,
-        "1d": 0.10,
+        "1m": 0.10,
+        "5m": 0.15,
+        "15m": 0.35,  # Primary trend for 15m binary options
+        "1h": 0.30,   # Macro trend confirmation
+        "4h": 0.05,
+        "1d": 0.05,
     }
 
     timeframe_signals = {}
@@ -206,12 +206,28 @@ def compute_layer2_signal(
     # Overall direction (weighted average)
     direction = weighted_sum / total_weight
 
+    # ─── CRITICAL CHECK: 15m and 1h Alignment ───
+    # If the 15m or 1h timeframe strongly disagrees with the trade direction, 
+    # kill the signal (confidence = 0).
+    sig_15m = timeframe_signals.get("15m", 0.0)
+    sig_1h = timeframe_signals.get("1h", 0.0)
+    
+    # We check if they are "fighting" the direction.
+    # E.g. direction is UP (>0), but 15m is DOWN (<-0.1) -> KILL
+    # We use a small buffer (0.1) to ignore neutral/weak signals.
+    fighting_trend = False
+    
+    if direction > 0.1:  # Bullish signal
+        if sig_15m < -0.1 or sig_1h < -0.1:
+            fighting_trend = True
+    elif direction < -0.1:  # Bearish signal
+        if sig_15m > 0.1 or sig_1h > 0.1:
+            fighting_trend = True
+
     # Alignment: how many timeframes agree
     alignment = max(bullish_count, bearish_count)
 
     # ─── FIXED CONFIDENCE: Based primarily on alignment ratio ───
-    # Old formula: alignment_ratio * |direction| → always tiny
-    # New formula: alignment drives confidence, direction is a bonus
     if total_computed > 0:
         alignment_ratio = alignment / total_computed
 
@@ -232,6 +248,12 @@ def compute_layer2_signal(
         confidence = min(1.0, base_confidence + direction_bonus)
     else:
         confidence = 0.0
+
+    # If fighting the 15m/1h trend, kill confidence
+    if fighting_trend:
+        logger.info(f"Layer 2 Signal VETOED: Fighting 15m/1h trend (Dir:{direction:.2f}, 15m:{sig_15m:.2f}, 1h:{sig_1h:.2f})")
+        confidence = 0.0
+        direction = 0.0 # Force neutral
 
     return Layer2Signal(
         timeframe_signals=timeframe_signals,

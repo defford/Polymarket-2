@@ -62,12 +62,13 @@ class RiskConfig:
     """Risk management parameters."""
 
     max_position_size: float = 3.0       # USD per trade
-    max_trades_per_window: int = 1       # per 15-min market
+    max_trades_per_window: int = 3       # per 15-min market
     max_daily_loss: float = 15.0         # USD
     min_signal_confidence: float = 0.35  # 0.0 - 1.0
     max_consecutive_losses: int = 3
     cooldown_minutes: int = 30           # after hitting loss limit
-    stop_trading_minutes_before_close: int = 2  # stop before market closes
+    stop_trading_minutes_before_close: int = 5  # stop before market closes
+    max_entry_price: float = 0.80        # max price to pay for a contract (0.0-1.0)
 
 
 @dataclass

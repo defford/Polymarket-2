@@ -46,6 +46,21 @@
     "cooldown_minutes": 30,
     "stop_trading_minutes_before_close": 2
   },
+  "exit": {
+    "enabled": true,
+    "trailing_stop_pct": 0.2,
+    "hard_stop_pct": 0.5,
+    "signal_reversal_threshold": 0.15,
+    "tighten_at_seconds": 180,
+    "tightened_trailing_pct": 0.1,
+    "final_seconds": 60,
+    "final_trailing_pct": 0.05,
+    "min_hold_seconds": 20,
+    "pressure_scaling_enabled": true,
+    "pressure_widen_max": 1.5,
+    "pressure_tighten_min": 0.4,
+    "pressure_neutral_zone": 0.15
+  },
   "trading": {
     "order_type": "postOnly",
     "price_offset": 0.01,
@@ -54,5 +69,5 @@
     "poll_interval_seconds": 10,
     "market_discovery_interval_seconds": 30
   },
-  "mode": "live"
+  "mode": "dry_run"
 }
