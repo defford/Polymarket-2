@@ -26,6 +26,7 @@ from polymarket.orders import order_manager
 from binance.client import binance_client
 from signals.engine import signal_engine
 from trading.risk import risk_manager
+from trading.exits import evaluate_exit
 import database as db
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,31 @@ class TradingEngine:
                 # Step 5: Check risk and maybe trade
                 await self._maybe_trade(market, composite_signal)
 
+                # Step 5.5: Check exit conditions for open positions
+                if order_manager.has_position(market.condition_id):
+                    # Update prices first (also tracks peak for trailing stop)
+                    order_manager.update_position_prices(market.condition_id)
+
+                    position = order_manager._open_positions.get(market.condition_id)
+                    if position:
+                        exit_decision = evaluate_exit(position, composite_signal)
+                        if exit_decision:
+                            sell_state = self._capture_market_state(market, composite_signal)
+                            is_dry = config_manager.config.mode != "live"
+                            pnl = order_manager.sell_position(
+                                market.condition_id,
+                                reason=exit_decision["reason"],
+                                is_dry_run=is_dry,
+                                sell_state_snapshot=sell_state,
+                            )
+                            if pnl is not None:
+                                risk_manager.record_trade_result(pnl, market.condition_id)
+                                self._total_pnl += pnl
+                                logger.info(
+                                    f"💰 Early exit ({exit_decision['reason_category']}): "
+                                    f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
+                                )
+
                 # Step 6: Update open position prices
                 for pos in order_manager.open_positions:
                     order_manager.update_position_prices(pos.market_condition_id)
@@ -294,6 +320,18 @@ class TradingEngine:
                 "price_offset": config.trading.price_offset,
                 "use_fok_for_strong_signals": config.trading.use_fok_for_strong_signals,
                 "strong_signal_threshold": config.trading.strong_signal_threshold,
+            },
+            "exit": {
+                "enabled": config.exit.enabled,
+                "trailing_stop_pct": config.exit.trailing_stop_pct,
+                "hard_stop_pct": config.exit.hard_stop_pct,
+                "signal_reversal_threshold": config.exit.signal_reversal_threshold,
+                "tighten_at_seconds": config.exit.tighten_at_seconds,
+                "tightened_trailing_pct": config.exit.tightened_trailing_pct,
+                "final_seconds": config.exit.final_seconds,
+                "final_trailing_pct": config.exit.final_trailing_pct,
+                "min_hold_seconds": config.exit.min_hold_seconds,
+                "pressure_scaling_enabled": config.exit.pressure_scaling_enabled,
             },
             "mode": config.mode,
         }
