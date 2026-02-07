@@ -201,6 +201,7 @@ class ConfigUpdateRequest(BaseModel):
     signal: Optional[dict] = None
     risk: Optional[dict] = None
     trading: Optional[dict] = None
+    exit: Optional[dict] = None
     mode: Optional[str] = None
 
 
