@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import {
   X, ArrowUpCircle, ArrowDownCircle, FlaskConical, Clock,
   DollarSign, BarChart2, TrendingUp, Shield, Settings, ChevronDown, ChevronRight,
-  Loader2
+  Loader2, LogOut
 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 
@@ -279,6 +279,9 @@ export default function TradeDetailModal({ trade, onClose }) {
               {/* Section 1: Trade Performance */}
               <TradePerformanceSection trade={details.trade} logData={logData} />
 
+              {/* Section 1.5: Exit Details */}
+              {logData?.exit_reason && <ExitDetailsSection logData={logData} trade={details.trade} />}
+
               {/* Section 2: Market Conditions */}
               <MarketConditionsSection stateData={stateData} viewLabel={viewState} />
 
@@ -387,6 +390,105 @@ function TradePerformanceSection({ trade, logData }) {
         <span>Fees: ${(trade?.fees || 0).toFixed(2)}</span>
         <span>Signal: {(trade?.signal_score || 0) > 0 ? '+' : ''}{(trade?.signal_score || 0).toFixed(3)}</span>
         <span>Time: {formatDateTime(trade?.timestamp)}</span>
+      </div>
+    </CollapsibleSection>
+  )
+}
+
+// --- Section 1.5: Exit Details ---
+
+function ExitDetailsSection({ logData, trade }) {
+  const [showDetail, setShowDetail] = useState(false)
+  const exitReason = logData?.exit_reason
+  const exitReasonDetail = logData?.exit_reason_detail
+  const exitPrice = logData?.exit_price
+  const peakPrice = logData?.peak_price
+  const drawdown = logData?.drawdown_from_peak
+  const timeRemaining = logData?.time_remaining_at_exit
+  const entryPrice = trade?.price
+
+  if (!exitReason) return null
+
+  // Color-code by reason category
+  const reasonColors = {
+    market_close: { badge: 'badge-green', label: 'Market Close', color: 'text-accent-green' },
+    trailing_stop: { badge: 'badge-yellow', label: 'Trailing Stop', color: 'text-accent-yellow' },
+    hard_stop: { badge: 'badge-red', label: 'Hard Stop', color: 'text-accent-red' },
+    signal_reversal: { badge: 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20 px-2.5 py-1 rounded-full text-2xs font-mono font-medium inline-flex items-center gap-1', label: 'Signal Reversal', color: 'text-accent-cyan' },
+  }
+  const rc = reasonColors[exitReason] || { badge: 'badge-muted', label: exitReason, color: 'text-text-dim' }
+
+  // Compute entry→exit price change
+  const priceChange = (exitPrice != null && entryPrice != null)
+    ? ((exitPrice - entryPrice) / entryPrice * 100)
+    : null
+
+  return (
+    <CollapsibleSection title="Exit Details" icon={LogOut} iconColor={rc.color}>
+      <div className="space-y-4">
+        {/* Exit Reason Badge */}
+        <div className="flex items-center gap-3">
+          <span className={rc.badge}>
+            <LogOut className="w-3 h-3" />
+            {rc.label}
+          </span>
+          {timeRemaining != null && typeof timeRemaining === 'number' && (
+            <span className="text-2xs font-mono text-text-dim">
+              {formatTimeRemaining(timeRemaining)} remaining
+            </span>
+          )}
+        </div>
+
+        {/* Exit Metrics */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-surface-2 rounded-lg p-3 text-center">
+            <p className="text-2xs text-text-dim">Entry Price</p>
+            <p className="font-mono text-sm font-bold text-text-primary">{formatPrice(entryPrice)}</p>
+          </div>
+          <div className="bg-surface-2 rounded-lg p-3 text-center">
+            <p className="text-2xs text-text-dim">Exit Price</p>
+            <p className={`font-mono text-sm font-bold ${
+              priceChange != null ? (priceChange >= 0 ? 'text-accent-green' : 'text-accent-red') : 'text-text-primary'
+            }`}>
+              {formatPrice(exitPrice)}
+              {priceChange != null && (
+                <span className="text-2xs ml-1">({priceChange >= 0 ? '+' : ''}{priceChange.toFixed(1)}%)</span>
+              )}
+            </p>
+          </div>
+          <div className="bg-surface-2 rounded-lg p-3 text-center">
+            <p className="text-2xs text-text-dim">Peak Price</p>
+            <p className="font-mono text-sm font-bold text-accent-cyan">{formatPrice(peakPrice)}</p>
+          </div>
+          <div className="bg-surface-2 rounded-lg p-3 text-center">
+            <p className="text-2xs text-text-dim">Drawdown</p>
+            <p className={`font-mono text-sm font-bold ${
+              drawdown != null && drawdown > 0.1 ? 'text-accent-red' : drawdown != null && drawdown > 0.05 ? 'text-accent-yellow' : 'text-text-primary'
+            }`}>
+              {drawdown != null ? `${(drawdown * 100).toFixed(1)}%` : '—'}
+            </p>
+          </div>
+        </div>
+
+        {/* Expandable Detail */}
+        {exitReasonDetail && (
+          <div>
+            <button
+              onClick={() => setShowDetail(!showDetail)}
+              className="flex items-center gap-1.5 text-2xs font-mono text-text-dim hover:text-text-secondary transition-colors cursor-pointer"
+            >
+              {showDetail ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              Full exit reason
+            </button>
+            {showDetail && (
+              <div className="mt-2 bg-surface-2 rounded-lg p-3">
+                <p className="text-2xs font-mono text-text-secondary break-all leading-relaxed">
+                  {exitReasonDetail}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </CollapsibleSection>
   )
@@ -705,6 +807,9 @@ function ConfigSection({ stateData }) {
         )}
         {config.trading && (
           <ConfigGroup label="Trading" entries={config.trading} />
+        )}
+        {config.exit && (
+          <ConfigGroup label="Exit" entries={config.exit} />
         )}
         {config.mode && (
           <div className="data-row">
