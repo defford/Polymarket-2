@@ -1,0 +1,357 @@
+import { useState, useEffect, useCallback } from 'react'
+import { Settings, Sliders, Shield, Zap, Save, RotateCcw, AlertTriangle } from 'lucide-react'
+
+function Section({ icon: Icon, title, description, children, color = 'text-text-dim' }) {
+  return (
+    <div className="card animate-slide-up">
+      <div className="card-header">
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${color}`} />
+          <span className="card-title">{title}</span>
+        </div>
+      </div>
+      <div className="card-body space-y-4">
+        {description && (
+          <p className="text-xs text-text-dim leading-relaxed">{description}</p>
+        )}
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function SliderParam({ label, value, min, max, step, unit, onChange, description }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="data-label">{label}</label>
+        <span className="text-sm font-mono font-medium text-accent-cyan tabular-nums">
+          {typeof value === 'number' ? value.toFixed(step < 1 ? 2 : 0) : value}{unit || ''}
+        </span>
+      </div>
+      {description && (
+        <p className="text-2xs text-text-dim mb-2">{description}</p>
+      )}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none bg-surface-3 cursor-pointer accent-accent-cyan"
+      />
+      <div className="flex justify-between mt-1">
+        <span className="text-2xs font-mono text-text-dim">{min}{unit}</span>
+        <span className="text-2xs font-mono text-text-dim">{max}{unit}</span>
+      </div>
+    </div>
+  )
+}
+
+function NumberParam({ label, value, min, max, step, unit, onChange }) {
+  return (
+    <div className="flex items-center justify-between">
+      <label className="data-label flex-1">{label}</label>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+          className="input-field w-24 text-right text-sm py-1.5"
+        />
+        {unit && <span className="text-2xs font-mono text-text-dim w-6">{unit}</span>}
+      </div>
+    </div>
+  )
+}
+
+function SelectParam({ label, value, options, onChange }) {
+  return (
+    <div className="flex items-center justify-between">
+      <label className="data-label">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="input-field w-36 text-sm py-1.5 cursor-pointer"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+export default function ConfigPanel({ config, onUpdate }) {
+  const [local, setLocal] = useState(null)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (config && !local) {
+      setLocal(JSON.parse(JSON.stringify(config)))
+    }
+  }, [config, local])
+
+  const update = useCallback((section, key, value) => {
+    setLocal((prev) => {
+      const next = { ...prev }
+      if (section) {
+        next[section] = { ...next[section], [key]: value }
+      } else {
+        next[key] = value
+      }
+      return next
+    })
+    setDirty(true)
+  }, [])
+
+  const handleSave = useCallback(async () => {
+    if (!local || !onUpdate) return
+    setSaving(true)
+    await onUpdate(local)
+    setDirty(false)
+    setSaving(false)
+  }, [local, onUpdate])
+
+  const handleReset = useCallback(() => {
+    if (config) {
+      setLocal(JSON.parse(JSON.stringify(config)))
+      setDirty(false)
+    }
+  }, [config])
+
+  if (!local) {
+    return (
+      <div className="py-12 text-center">
+        <p className="text-sm text-text-dim">Loading configuration…</p>
+      </div>
+    )
+  }
+
+  const sig = local.signal || {}
+  const risk = local.risk || {}
+  const trading = local.trading || {}
+
+  return (
+    <div className="space-y-4 animate-fade-in">
+      {/* Save Bar */}
+      {dirty && (
+        <div className="bg-accent-blue/10 border border-accent-blue/30 rounded-lg p-3 flex items-center justify-between sticky top-14 z-20 backdrop-blur-md">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-accent-blue" />
+            <span className="text-sm text-accent-blue font-medium">Unsaved changes</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handleReset} className="btn-ghost text-xs py-1.5">
+              <RotateCcw className="w-3 h-3 mr-1 inline" />
+              Reset
+            </button>
+            <button onClick={handleSave} disabled={saving} className="btn-primary text-xs py-1.5">
+              <Save className="w-3 h-3 mr-1 inline" />
+              {saving ? 'Saving…' : 'Save & Apply'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Mode */}
+      <Section icon={Zap} title="Bot Mode" color="text-accent-cyan">
+        <div className="flex gap-3">
+          {[
+            { value: 'dry_run', label: 'Dry Run', desc: 'Simulated trades, no real money' },
+            { value: 'live', label: 'Live', desc: 'Real orders with real USDC' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => update(null, 'mode', opt.value)}
+              className={`flex-1 p-4 rounded-lg border-2 transition-all cursor-pointer text-left ${
+                local.mode === opt.value
+                  ? opt.value === 'live'
+                    ? 'border-accent-red bg-accent-red/5'
+                    : 'border-accent-cyan bg-accent-cyan/5'
+                  : 'border-surface-3 bg-surface-2 hover:border-surface-4'
+              }`}
+            >
+              <p className={`text-sm font-display font-semibold ${
+                local.mode === opt.value
+                  ? opt.value === 'live' ? 'text-accent-red' : 'text-accent-cyan'
+                  : 'text-text-secondary'
+              }`}>
+                {opt.label}
+              </p>
+              <p className="text-2xs text-text-dim mt-1">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+        {local.mode === 'live' && (
+          <div className="bg-accent-red/10 border border-accent-red/20 rounded-lg p-3 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-accent-red mt-0.5 shrink-0" />
+            <p className="text-xs text-accent-red">
+              Live mode will place real orders with real USDC. Make sure your wallet is funded and you understand the risks.
+            </p>
+          </div>
+        )}
+      </Section>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Signal Config */}
+        <Section
+          icon={Sliders}
+          title="Signal Parameters"
+          description="Tune how signals are generated and combined."
+          color="text-accent-blue"
+        >
+          <div className="space-y-5">
+            <div className="pb-3 border-b border-surface-2">
+              <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                Signal Weights
+              </p>
+              <div className="space-y-4">
+                <SliderParam
+                  label="Layer 1 Weight (Token TA)"
+                  value={sig.layer1_weight ?? 0.4}
+                  min={0} max={1} step={0.05}
+                  onChange={(v) => update('signal', 'layer1_weight', v)}
+                />
+                <SliderParam
+                  label="Layer 2 Weight (BTC EMAs)"
+                  value={sig.layer2_weight ?? 0.6}
+                  min={0} max={1} step={0.05}
+                  onChange={(v) => update('signal', 'layer2_weight', v)}
+                />
+                <SliderParam
+                  label="Buy Threshold"
+                  value={sig.buy_threshold ?? 0.3}
+                  min={0.05} max={0.9} step={0.05}
+                  description="Composite score must exceed this to trigger a trade"
+                  onChange={(v) => update('signal', 'buy_threshold', v)}
+                />
+              </div>
+            </div>
+
+            <div className="pb-3 border-b border-surface-2">
+              <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                Layer 1: Polymarket Token TA
+              </p>
+              <div className="space-y-3">
+                <NumberParam label="RSI Period" value={sig.pm_rsi_period ?? 14}
+                  min={5} max={30} step={1} onChange={(v) => update('signal', 'pm_rsi_period', v)} />
+                <NumberParam label="RSI Oversold" value={sig.pm_rsi_oversold ?? 30}
+                  min={10} max={45} step={1} onChange={(v) => update('signal', 'pm_rsi_oversold', v)} />
+                <NumberParam label="RSI Overbought" value={sig.pm_rsi_overbought ?? 70}
+                  min={55} max={90} step={1} onChange={(v) => update('signal', 'pm_rsi_overbought', v)} />
+                <NumberParam label="MACD Fast" value={sig.pm_macd_fast ?? 12}
+                  min={5} max={20} step={1} onChange={(v) => update('signal', 'pm_macd_fast', v)} />
+                <NumberParam label="MACD Slow" value={sig.pm_macd_slow ?? 26}
+                  min={15} max={40} step={1} onChange={(v) => update('signal', 'pm_macd_slow', v)} />
+                <NumberParam label="MACD Signal" value={sig.pm_macd_signal ?? 9}
+                  min={3} max={15} step={1} onChange={(v) => update('signal', 'pm_macd_signal', v)} />
+                <NumberParam label="Momentum Lookback" value={sig.pm_momentum_lookback ?? 5}
+                  min={2} max={15} step={1} onChange={(v) => update('signal', 'pm_momentum_lookback', v)} />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Risk + Trading Config */}
+        <div className="space-y-4">
+          <Section
+            icon={Shield}
+            title="Risk Management"
+            description="Controls to protect your capital."
+            color="text-accent-yellow"
+          >
+            <div className="space-y-4">
+              <SliderParam
+                label="Max Position Size"
+                value={risk.max_position_size ?? 3}
+                min={1} max={100} step={1} unit="$"
+                description="Maximum USDC per trade"
+                onChange={(v) => update('risk', 'max_position_size', v)}
+              />
+              <SliderParam
+                label="Max Daily Loss"
+                value={risk.max_daily_loss ?? 15}
+                min={5} max={500} step={5} unit="$"
+                description="Bot stops trading after this daily loss"
+                onChange={(v) => update('risk', 'max_daily_loss', v)}
+              />
+              <SliderParam
+                label="Min Signal Confidence"
+                value={risk.min_signal_confidence ?? 0.6}
+                min={0.1} max={1.0} step={0.05}
+                description="Minimum confidence to allow a trade"
+                onChange={(v) => update('risk', 'min_signal_confidence', v)}
+              />
+              <NumberParam label="Max Trades / Window" value={risk.max_trades_per_window ?? 1}
+                min={1} max={5} step={1} onChange={(v) => update('risk', 'max_trades_per_window', v)} />
+              <NumberParam label="Max Consecutive Losses" value={risk.max_consecutive_losses ?? 3}
+                min={1} max={10} step={1} onChange={(v) => update('risk', 'max_consecutive_losses', v)} />
+              <NumberParam label="Cooldown (minutes)" value={risk.cooldown_minutes ?? 30}
+                min={5} max={120} step={5} unit="min" onChange={(v) => update('risk', 'cooldown_minutes', v)} />
+              <NumberParam label="Stop Before Close" value={risk.stop_trading_minutes_before_close ?? 2}
+                min={0} max={10} step={1} unit="min" onChange={(v) => update('risk', 'stop_trading_minutes_before_close', v)} />
+            </div>
+          </Section>
+
+          <Section
+            icon={Settings}
+            title="Trading Behavior"
+            description="How orders are placed on Polymarket."
+            color="text-accent-green"
+          >
+            <div className="space-y-3">
+              <SelectParam
+                label="Order Type"
+                value={trading.order_type ?? 'postOnly'}
+                options={[
+                  { value: 'postOnly', label: 'Post Only (maker)' },
+                  { value: 'limit', label: 'Limit' },
+                  { value: 'market', label: 'Market (FOK)' },
+                ]}
+                onChange={(v) => update('trading', 'order_type', v)}
+              />
+              <NumberParam label="Price Offset" value={trading.price_offset ?? 0.01}
+                min={0} max={0.1} step={0.005} onChange={(v) => update('trading', 'price_offset', v)} />
+              <NumberParam label="Poll Interval" value={trading.poll_interval_seconds ?? 10}
+                min={3} max={60} step={1} unit="s" onChange={(v) => update('trading', 'poll_interval_seconds', v)} />
+              <NumberParam label="Market Discovery Interval" value={trading.market_discovery_interval_seconds ?? 30}
+                min={10} max={120} step={5} unit="s" onChange={(v) => update('trading', 'market_discovery_interval_seconds', v)} />
+
+              <div className="border-t border-surface-2 pt-3">
+                <div className="flex items-center justify-between">
+                  <label className="data-label">Use FOK for Strong Signals</label>
+                  <button
+                    onClick={() => update('trading', 'use_fok_for_strong_signals', !trading.use_fok_for_strong_signals)}
+                    className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${
+                      trading.use_fok_for_strong_signals ? 'bg-accent-green' : 'bg-surface-3'
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                      trading.use_fok_for_strong_signals ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                  </button>
+                </div>
+                {trading.use_fok_for_strong_signals && (
+                  <div className="mt-2">
+                    <SliderParam
+                      label="Strong Signal Threshold"
+                      value={trading.strong_signal_threshold ?? 0.8}
+                      min={0.5} max={1.0} step={0.05}
+                      onChange={(v) => update('trading', 'strong_signal_threshold', v)}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </Section>
+        </div>
+      </div>
+    </div>
+  )
+}

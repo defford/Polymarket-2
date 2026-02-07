@@ -1,0 +1,25 @@
+# Environment
+.env
+venv/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Node
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.cursor/
+
+# Exports
+trade_log.json
+
+# OS
+.DS_Store

@@ -1,0 +1,58 @@
+{
+  "signal": {
+    "pm_rsi_period": 14,
+    "pm_rsi_oversold": 30,
+    "pm_rsi_overbought": 70,
+    "pm_macd_fast": 12,
+    "pm_macd_slow": 26,
+    "pm_macd_signal": 9,
+    "pm_momentum_lookback": 5,
+    "btc_ema_1m": [
+      5,
+      13
+    ],
+    "btc_ema_5m": [
+      8,
+      21
+    ],
+    "btc_ema_15m": [
+      9,
+      21,
+      55
+    ],
+    "btc_ema_1h": [
+      12,
+      26
+    ],
+    "btc_ema_4h": [
+      20,
+      50
+    ],
+    "btc_ema_1d": [
+      20,
+      50,
+      200
+    ],
+    "layer1_weight": 0.7,
+    "layer2_weight": 0.3,
+    "buy_threshold": 0.1
+  },
+  "risk": {
+    "max_position_size": 3,
+    "max_trades_per_window": 1,
+    "max_daily_loss": 15,
+    "min_signal_confidence": 0.35,
+    "max_consecutive_losses": 3,
+    "cooldown_minutes": 30,
+    "stop_trading_minutes_before_close": 2
+  },
+  "trading": {
+    "order_type": "postOnly",
+    "price_offset": 0.01,
+    "use_fok_for_strong_signals": false,
+    "strong_signal_threshold": 0.8,
+    "poll_interval_seconds": 10,
+    "market_discovery_interval_seconds": 30
+  },
+  "mode": "live"
+}

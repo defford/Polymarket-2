@@ -1,0 +1,164 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a3a #12121a;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: #12121a;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #2a2a3a;
+    border-radius: 3px;
+  }
+
+  body {
+    background: #0a0a0f;
+    overflow-x: hidden;
+  }
+
+  /* Subtle noise texture overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.015;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-1 border border-surface-3 rounded-lg;
+  }
+
+  .card-header {
+    @apply px-4 py-3 border-b border-surface-3 flex items-center justify-between;
+  }
+
+  .card-body {
+    @apply p-4;
+  }
+
+  .card-title {
+    @apply font-display text-xs font-semibold uppercase tracking-widest text-text-secondary;
+  }
+
+  .stat-value {
+    @apply font-mono text-2xl font-bold tabular-nums;
+  }
+
+  .stat-label {
+    @apply text-2xs uppercase tracking-wider text-text-dim font-medium mt-0.5;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-mono font-medium uppercase tracking-wider;
+  }
+
+  .badge-green {
+    @apply badge bg-accent-green/10 text-accent-green border border-accent-green/20;
+  }
+
+  .badge-red {
+    @apply badge bg-accent-red/10 text-accent-red border border-accent-red/20;
+  }
+
+  .badge-blue {
+    @apply badge bg-accent-blue/10 text-accent-blue border border-accent-blue/20;
+  }
+
+  .badge-yellow {
+    @apply badge bg-accent-yellow/10 text-accent-yellow border border-accent-yellow/20;
+  }
+
+  .badge-muted {
+    @apply badge bg-surface-3 text-text-dim border border-surface-4;
+  }
+
+  .btn {
+    @apply px-4 py-2 rounded font-sans text-sm font-medium transition-all duration-150 
+           disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent-blue text-white hover:bg-accent-blue/80 active:scale-[0.97];
+  }
+
+  .btn-green {
+    @apply btn bg-accent-green/15 text-accent-green border border-accent-green/30 
+           hover:bg-accent-green/25 active:scale-[0.97];
+  }
+
+  .btn-red {
+    @apply btn bg-accent-red/15 text-accent-red border border-accent-red/30 
+           hover:bg-accent-red/25 active:scale-[0.97];
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-text-secondary border border-surface-3 
+           hover:bg-surface-2 hover:text-text-primary;
+  }
+
+  .input-field {
+    @apply w-full bg-surface-2 border border-surface-4 rounded px-3 py-2 
+           font-mono text-sm text-text-primary placeholder-text-dim
+           focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/20
+           transition-colors;
+  }
+
+  .slider-container {
+    @apply flex items-center gap-3;
+  }
+
+  .slider-container input[type="range"] {
+    @apply flex-1 h-1 rounded-full appearance-none bg-surface-3 cursor-pointer
+           accent-accent-blue;
+  }
+
+  .data-row {
+    @apply flex items-center justify-between py-2 border-b border-surface-2 last:border-0;
+  }
+
+  .data-label {
+    @apply text-xs text-text-dim font-mono uppercase tracking-wider;
+  }
+
+  .data-value {
+    @apply text-sm font-mono text-text-primary tabular-nums;
+  }
+
+  .pnl-positive {
+    @apply text-accent-green;
+  }
+
+  .pnl-negative {
+    @apply text-accent-red;
+  }
+
+  .signal-bar {
+    @apply h-1.5 rounded-full transition-all duration-500;
+  }
+
+  .glow-green {
+    box-shadow: 0 0 12px rgba(0, 230, 118, 0.15);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 12px rgba(255, 23, 68, 0.15);
+  }
+
+  .glow-blue {
+    box-shadow: 0 0 12px rgba(68, 138, 255, 0.15);
+  }
+}
