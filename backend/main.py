@@ -262,6 +262,224 @@ async def get_session_details(session_id: int):
     }
 
 
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: int):
+    """
+    Export a complete session as structured text optimized for AI consumption.
+
+    Returns session overview, performance analytics, and full trade logs
+    with market state data formatted for readability.
+    """
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stats = db.get_session_stats(session_id)
+    trades_with_logs = db.get_trades_with_log_data(session_id)
+
+    # Compute analytics
+    filled = [(t, ld) for t, ld in trades_with_logs if t.status.value == "filled"]
+    wins = [(t, ld) for t, ld in filled if (t.pnl or 0) > 0]
+    losses = [(t, ld) for t, ld in filled if (t.pnl or 0) < 0]
+
+    avg_win = sum(t.pnl for t, _ in wins) / len(wins) if wins else 0.0
+    avg_loss = sum(t.pnl for t, _ in losses) / len(losses) if losses else 0.0
+    profit_factor = abs(sum(t.pnl for t, _ in wins) / sum(t.pnl for t, _ in losses)) if losses and sum(t.pnl for t, _ in losses) != 0 else float("inf")
+    total_fees = sum(t.fees for t, _ in filled)
+
+    # Count exit reasons
+    exit_reasons = {}
+    for t, ld in filled:
+        if ld:
+            try:
+                log = json.loads(ld)
+                reason = log.get("exit_reason", "unknown")
+                exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+            except Exception:
+                pass
+
+    analytics = {
+        "total_trades": len(filled),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": len(wins) / len(filled) if filled else 0.0,
+        "avg_win": round(avg_win, 2),
+        "avg_loss": round(avg_loss, 2),
+        "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else None,
+        "total_fees": round(total_fees, 2),
+        "largest_win": round(stats.largest_win, 2),
+        "largest_loss": round(stats.largest_loss, 2),
+        "exit_reasons": exit_reasons,
+    }
+
+    # Build export text
+    export_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+    return {
+        "session": session.model_dump(),
+        "stats": stats.model_dump(),
+        "analytics": analytics,
+        "export_text": export_text,
+    }
+
+
+def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
+    """Format a session as structured text for AI consumption."""
+    lines = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Header
+    lines.append(f"# Session #{session.id} Export")
+    lines.append(f"Generated: {now}")
+    lines.append("")
+
+    # Session Overview
+    lines.append("## Session Overview")
+    lines.append(f"- Start: {session.start_time.isoformat() if session.start_time else 'N/A'}")
+    lines.append(f"- End: {session.end_time.isoformat() if session.end_time else 'ongoing'}")
+    if session.start_time and session.end_time:
+        duration = (session.end_time - session.start_time).total_seconds()
+        mins, secs = divmod(int(duration), 60)
+        hours, mins = divmod(mins, 60)
+        lines.append(f"- Duration: {hours}h {mins}m {secs}s")
+    lines.append(f"- Status: {session.status}")
+    lines.append(f"- Total P&L: ${session.total_pnl or 0:.2f}")
+    lines.append("")
+
+    # Performance Summary
+    lines.append("## Performance Summary")
+    lines.append(f"- Trades: {analytics['total_trades']} ({analytics['wins']}W / {analytics['losses']}L)")
+    lines.append(f"- Win Rate: {analytics['win_rate']:.1%}")
+    lines.append(f"- Avg Win: ${analytics['avg_win']:.2f}")
+    lines.append(f"- Avg Loss: ${analytics['avg_loss']:.2f}")
+    pf = f"{analytics['profit_factor']:.2f}" if analytics['profit_factor'] is not None else "∞"
+    lines.append(f"- Profit Factor: {pf}")
+    lines.append(f"- Largest Win: ${analytics['largest_win']:.2f}")
+    lines.append(f"- Largest Loss: ${analytics['largest_loss']:.2f}")
+    lines.append(f"- Total Fees: ${analytics['total_fees']:.2f}")
+    if analytics['exit_reasons']:
+        lines.append(f"- Exit Reasons: {', '.join(f'{k}={v}' for k, v in analytics['exit_reasons'].items())}")
+    lines.append("")
+
+    # Trade Log
+    lines.append("## Trade Log")
+    for trade, log_data_str in trades_with_logs:
+        if trade.status.value != "filled":
+            continue
+
+        pnl_str = f"${trade.pnl:+.2f}" if trade.pnl is not None else "pending"
+        lines.append(f"### Trade #{trade.id} — {trade.side.value.upper()} @ ¢{trade.price * 100:.1f} → P&L: {pnl_str}")
+        lines.append(f"- Time: {trade.timestamp.isoformat()}")
+        lines.append(f"- Side: {trade.side.value.upper()}")
+        lines.append(f"- Entry Price: ¢{trade.price * 100:.1f}")
+        lines.append(f"- Size: {trade.size:.2f} tokens")
+        lines.append(f"- Cost: ${trade.cost:.2f}")
+        lines.append(f"- Fees: ${trade.fees:.2f}")
+        lines.append(f"- Signal Score: {trade.signal_score:+.3f}")
+        lines.append(f"- Dry Run: {'yes' if trade.is_dry_run else 'no'}")
+
+        if log_data_str:
+            try:
+                log = json.loads(log_data_str)
+            except Exception:
+                log = {}
+
+            # Exit metadata
+            if log.get("exit_reason"):
+                lines.append(f"- Exit Reason: {log['exit_reason']}")
+            if log.get("exit_reason_detail"):
+                lines.append(f"- Exit Detail: {log['exit_reason_detail']}")
+            if log.get("exit_price") is not None:
+                lines.append(f"- Exit Price: ¢{log['exit_price'] * 100:.1f}")
+            if log.get("peak_price") is not None:
+                lines.append(f"- Peak Price: ¢{log['peak_price'] * 100:.1f}")
+            if log.get("drawdown_from_peak") is not None:
+                lines.append(f"- Drawdown from Peak: {log['drawdown_from_peak']:.1%}")
+            if log.get("position_held_duration_seconds") is not None:
+                dur = int(log["position_held_duration_seconds"])
+                lines.append(f"- Position Duration: {dur // 60}m {dur % 60}s")
+            if log.get("time_remaining_at_exit") is not None:
+                tr = log["time_remaining_at_exit"]
+                if isinstance(tr, (int, float)):
+                    lines.append(f"- Time Remaining at Exit: {int(tr) // 60}m {int(tr) % 60}s")
+
+            # Buy state
+            buy_state = log.get("buy_state", {})
+            if buy_state:
+                signal = buy_state.get("signal", {})
+                if signal:
+                    lines.append(f"- Entry Signal: composite={signal.get('composite_score', 0):+.3f}")
+                    l1 = signal.get("layer1")
+                    if l1:
+                        lines.append(f"  - L1 (Polymarket TA): score={l1.get('score', 0):+.3f} | RSI={l1.get('rsi', {}).get('value', 0):.1f} ({l1.get('rsi', {}).get('signal', 'N/A')}) | MACD signal={l1.get('macd', {}).get('signal', 'N/A')} | Momentum={l1.get('momentum', {}).get('value', 0):+.3f}")
+                    l2 = signal.get("layer2")
+                    if l2:
+                        lines.append(f"  - L2 (BTC Multi-TF): score={l2.get('score', 0):+.3f} | alignment={l2.get('alignment', 0)}/3")
+                        tfs = l2.get("timeframes", {})
+                        for tf_name, tf_data in tfs.items():
+                            if isinstance(tf_data, dict):
+                                lines.append(f"    - {tf_name}: trend={tf_data.get('trend', 'N/A')} strength={tf_data.get('strength', 0):.3f}")
+
+                btc_price = buy_state.get("btc_price")
+                if btc_price:
+                    lines.append(f"- BTC Price at Entry: ${btc_price:,.2f}")
+
+                # Order book summary
+                for book_key, label in [("orderbook_up", "UP Token"), ("orderbook_down", "DOWN Token")]:
+                    ob = buy_state.get(book_key, {})
+                    if ob:
+                        bids = ob.get("bids", [])
+                        asks = ob.get("asks", [])
+                        bid_depth = sum(float(b.get("size", 0)) for b in bids[:5]) if bids else 0
+                        ask_depth = sum(float(a.get("size", 0)) for a in asks[:5]) if asks else 0
+                        best_bid = float(bids[0].get("price", 0)) if bids else 0
+                        best_ask = float(asks[0].get("price", 0)) if asks else 0
+                        lines.append(f"  - {label} Book: bid={best_bid:.3f} ask={best_ask:.3f} | depth: bid={bid_depth:.0f} ask={ask_depth:.0f}")
+
+                # Risk state
+                risk = buy_state.get("risk_state", {})
+                if risk:
+                    lines.append(f"- Risk State: consecutive_losses={risk.get('consecutive_losses', 0)} daily_pnl=${risk.get('daily_pnl', 0):.2f} trades_in_window={risk.get('trades_this_window', 0)}")
+
+                # Market window
+                mw = buy_state.get("market_window_info", {})
+                if mw and mw.get("time_until_close_seconds") is not None:
+                    tuc = int(mw["time_until_close_seconds"])
+                    lines.append(f"- Time Until Close at Entry: {tuc // 60}m {tuc % 60}s")
+
+                # Config snapshot
+                config = buy_state.get("config_snapshot", {})
+                if config:
+                    lines.append(f"- Config: mode={config.get('mode', 'N/A')} order_type={config.get('trading', {}).get('order_type', 'N/A')} buy_threshold={config.get('signal', {}).get('buy_threshold', 'N/A')}")
+                    exit_cfg = config.get("exit", {})
+                    if exit_cfg:
+                        lines.append(f"  - Exit: trailing={exit_cfg.get('trailing_stop_pct', 'N/A')} hard={exit_cfg.get('hard_stop_pct', 'N/A')} reversal={exit_cfg.get('signal_reversal_threshold', 'N/A')} pressure={exit_cfg.get('pressure_scaling_enabled', 'N/A')}")
+
+            # Sell state (if different from buy)
+            sell_state = log.get("sell_state", {})
+            if sell_state:
+                signal = sell_state.get("signal", {})
+                if signal:
+                    lines.append(f"- Exit Signal: composite={signal.get('composite_score', 0):+.3f}")
+                btc_price = sell_state.get("btc_price")
+                if btc_price:
+                    lines.append(f"- BTC Price at Exit: ${btc_price:,.2f}")
+
+            # BTC candles
+            candles = buy_state.get("btc_candles_summary", {})
+            if candles:
+                candle_parts = []
+                for tf, data in candles.items():
+                    if isinstance(data, dict):
+                        candle_parts.append(f"{tf}: O={data.get('open', 0):.0f} H={data.get('high', 0):.0f} L={data.get('low', 0):.0f} C={data.get('close', 0):.0f}")
+                if candle_parts:
+                    lines.append(f"- BTC Candles: {' | '.join(candle_parts)}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 @app.get("/api/signals")
 async def get_signals():
     """Get current signal state."""
