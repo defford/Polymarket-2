@@ -254,10 +254,158 @@ class OrderManager:
                 
                 log_entry["pnl"] = pnl
                 log_entry["resolution_price"] = resolution_price
-                
+
+                # Exit metadata for market close
+                log_entry["exit_reason"] = "market_close"
+                log_entry["exit_price"] = resolution_price
+                log_entry["peak_price"] = position.peak_price
+                log_entry["drawdown_from_peak"] = (
+                    (position.peak_price - position.current_price) / position.peak_price
+                    if position.peak_price > 0 else 0.0
+                )
+                log_entry["time_remaining_at_exit"] = 0
+
                 # Update trade log data
                 updated_log_data = json.dumps(log_entry, default=str)
                 db.update_trade(trade.id, pnl=pnl, status="filled", trade_log_data=updated_log_data)
+
+        # Close position
+        del self._open_positions[condition_id]
+        return pnl
+
+    def sell_position(
+        self,
+        condition_id: str,
+        reason: str = "stop_loss",
+        is_dry_run: bool = True,
+        sell_state_snapshot: Optional[MarketStateSnapshot] = None,
+    ) -> Optional[float]:
+        """
+        Sell an open position early (before market resolution).
+
+        Places a SELL order for the tokens we hold. Updates the existing
+        buy trade record with exit metadata (same pattern as resolve_position).
+
+        Args:
+            condition_id: The market to sell from
+            reason: Why we're selling (full reason string from exit strategy)
+            is_dry_run: Whether to simulate
+            sell_state_snapshot: Market state at time of exit
+
+        Returns:
+            P&L from the early exit, or None if failed
+        """
+        position = self._open_positions.get(condition_id)
+        if not position:
+            logger.warning(f"No position to sell for {condition_id[:16]}...")
+            return None
+
+        # Get current sell price
+        try:
+            sell_price = polymarket_client.get_price(position.token_id, side="SELL")
+        except Exception:
+            sell_price = position.current_price
+
+        if sell_price <= 0:
+            logger.warning(f"Invalid sell price {sell_price}, using current_price")
+            sell_price = position.current_price
+
+        # Calculate proceeds and P&L
+        proceeds = sell_price * position.size
+        estimated_fee = proceeds * 0.02  # conservative taker fee estimate
+        net_proceeds = proceeds - estimated_fee
+        pnl = net_proceeds - position.cost
+
+        # Parse exit reason category
+        exit_reason = _parse_exit_reason(reason)
+
+        if is_dry_run:
+            logger.info(
+                f"🧪🔴 DRY RUN EXIT ({exit_reason}): "
+                f"SELL {position.side.value.upper()} "
+                f"{position.size:.2f} tokens @ {sell_price:.3f} | "
+                f"Entry: {position.entry_price:.3f} | Peak: {position.peak_price:.3f} | "
+                f"Proceeds: ${net_proceeds:.2f} | P&L: ${pnl:+.2f}"
+            )
+        else:
+            # Live sell
+            try:
+                resp = polymarket_client.place_market_order(
+                    token_id=position.token_id,
+                    amount=position.size,
+                    side="SELL",
+                )
+                if not (resp.get("success") or resp.get("orderID")):
+                    error = resp.get("errorMsg", "Unknown error")
+                    logger.warning(f"❌ Exit sell rejected: {error}")
+                    return None
+
+                order_id = resp.get("orderID", resp.get("order_id", "unknown"))
+                logger.info(
+                    f"🔴 LIVE EXIT ({exit_reason}): "
+                    f"SELL {position.side.value.upper()} "
+                    f"{position.size:.2f} tokens @ ~{sell_price:.3f} | "
+                    f"P&L: ${pnl:+.2f} (id={order_id})"
+                )
+            except Exception as e:
+                logger.error(f"❌ Exit sell error: {e}")
+                return None
+
+        # Update the existing buy trade record with exit data
+        trades = db.get_trades_for_market(condition_id)
+        for trade in trades:
+            if trade.status == OrderStatus.FILLED and trade.pnl is None:
+                existing_log_data = db.get_trade_log_data(trade.id)
+                log_entry = {}
+
+                if existing_log_data:
+                    try:
+                        log_entry = json.loads(existing_log_data)
+                    except Exception as e:
+                        logger.debug(f"Error parsing existing log data: {e}")
+
+                # Add sell state
+                if sell_state_snapshot:
+                    log_entry["sell_state"] = sell_state_snapshot.model_dump(mode="json")
+
+                    # Calculate position held duration
+                    if "buy_state" in log_entry and log_entry["buy_state"].get("timestamp"):
+                        try:
+                            buy_time = datetime.fromisoformat(log_entry["buy_state"]["timestamp"])
+                            sell_time = sell_state_snapshot.timestamp
+                            duration = (sell_time - buy_time).total_seconds()
+                            log_entry["position_held_duration_seconds"] = duration
+                        except Exception as e:
+                            logger.debug(f"Error calculating duration: {e}")
+
+                # Exit metadata
+                log_entry["pnl"] = pnl
+                log_entry["exit_reason"] = exit_reason
+                log_entry["exit_reason_detail"] = reason
+                log_entry["exit_price"] = sell_price
+                log_entry["peak_price"] = position.peak_price
+                log_entry["drawdown_from_peak"] = (
+                    (position.peak_price - position.current_price) / position.peak_price
+                    if position.peak_price > 0 else 0.0
+                )
+
+                # Time remaining at exit
+                time_remaining = None
+                if sell_state_snapshot and sell_state_snapshot.market_window_info:
+                    time_remaining = sell_state_snapshot.market_window_info.get(
+                        "time_until_close_seconds"
+                    )
+                log_entry["time_remaining_at_exit"] = time_remaining
+
+                updated_log_data = json.dumps(log_entry, default=str)
+                db.update_trade(
+                    trade.id,
+                    pnl=pnl,
+                    fees=estimated_fee,
+                    status="filled",
+                    trade_log_data=updated_log_data,
+                )
+                break  # Only update the first matching trade
 
         # Close position
         del self._open_positions[condition_id]
@@ -288,6 +436,20 @@ class OrderManager:
                 logger.info("All open orders cancelled")
             except Exception as e:
                 logger.error(f"Error cancelling orders: {e}")
+
+
+def _parse_exit_reason(reason: str) -> str:
+    """Parse a detailed exit reason string into a category."""
+    reason_lower = reason.lower()
+    if reason_lower.startswith("trailing_stop"):
+        return "trailing_stop"
+    elif reason_lower.startswith("hard_stop"):
+        return "hard_stop"
+    elif reason_lower.startswith("signal_reversal"):
+        return "signal_reversal"
+    elif reason_lower.startswith("market_close"):
+        return "market_close"
+    return "unknown"
 
 
 # Global singleton
