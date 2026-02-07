@@ -411,14 +411,27 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
                     lines.append(f"- Entry Signal: composite={signal.get('composite_score', 0):+.3f}")
                     l1 = signal.get("layer1")
                     if l1:
-                        lines.append(f"  - L1 (Polymarket TA): score={l1.get('score', 0):+.3f} | RSI={l1.get('rsi', {}).get('value', 0):.1f} ({l1.get('rsi', {}).get('signal', 'N/A')}) | MACD signal={l1.get('macd', {}).get('signal', 'N/A')} | Momentum={l1.get('momentum', {}).get('value', 0):+.3f}")
+                        rsi_val = l1.get("rsi", 0)
+                        macd_val = l1.get("macd", 0)
+                        momentum_val = l1.get("momentum", 0)
+                        direction_val = l1.get("direction", 0)
+                        confidence_val = l1.get("confidence", 0)
+                        lines.append(
+                            f"  - L1 (Polymarket TA): direction={direction_val:+.3f} | "
+                            f"RSI={rsi_val:.1f} | MACD={macd_val:+.4f} | "
+                            f"Momentum={momentum_val:+.4f} | conf={confidence_val:.2f}"
+                        )
                     l2 = signal.get("layer2")
                     if l2:
-                        lines.append(f"  - L2 (BTC Multi-TF): score={l2.get('score', 0):+.3f} | alignment={l2.get('alignment', 0)}/3")
-                        tfs = l2.get("timeframes", {})
-                        for tf_name, tf_data in tfs.items():
-                            if isinstance(tf_data, dict):
-                                lines.append(f"    - {tf_name}: trend={tf_data.get('trend', 'N/A')} strength={tf_data.get('strength', 0):.3f}")
+                        direction_val = l2.get("direction", 0)
+                        alignment = l2.get("alignment_count", 0)
+                        total_tf = l2.get("total_timeframes", 6)
+                        lines.append(f"  - L2 (BTC Multi-TF): direction={direction_val:+.3f} | alignment={alignment}/{total_tf}")
+                        tfs = l2.get("timeframe_signals", {})
+                        for tf_name, tf_val in tfs.items():
+                            if isinstance(tf_val, (int, float)):
+                                arrow = "↑" if tf_val > 0.1 else "↓" if tf_val < -0.1 else "—"
+                                lines.append(f"    - {tf_name}: {tf_val:+.3f} {arrow}")
 
                 btc_price = buy_state.get("btc_price")
                 if btc_price:
