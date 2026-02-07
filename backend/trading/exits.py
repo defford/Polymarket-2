@@ -1,7 +1,10 @@
 """
-Exit Strategy Monitor.
+Exit Strategy Evaluator.
 
-Checks open positions against stop-loss conditions each tick:
+Evaluates open positions against stop-loss conditions each tick and returns
+exit decisions. Does NOT execute sells — the engine handles that.
+
+Checks:
 1. Trailing stop — sell if price drops X% from peak
 2. Time-decay tightening — tighter stops as window closes
 3. BTC pressure scaling — short-term TA widens/tightens stops dynamically
@@ -22,7 +25,6 @@ from typing import Optional
 
 from config import config_manager
 from models import CompositeSignal, Side, Position, MarketInfo
-from polymarket.orders import order_manager
 from polymarket.markets import market_discovery
 from binance.client import binance_client
 from signals.btc_ta import compute_short_term_pressure
@@ -36,11 +38,11 @@ def _compute_pressure_multiplier(
 ) -> float:
     """
     Convert BTC short-term pressure into a stop-loss multiplier.
-    
+
     Args:
         position_side: Which side we're holding (UP or DOWN)
         pressure: Output from compute_short_term_pressure()
-    
+
     Returns:
         Multiplier for the trailing stop percentage:
         - > 1.0: BTC supports our position -> widen stop (more room)
@@ -80,31 +82,34 @@ def _compute_pressure_multiplier(
     return round(multiplier, 3)
 
 
-def check_exit_conditions(
-    market: MarketInfo,
+def evaluate_exit(
+    position: Position,
     signal: CompositeSignal,
-) -> Optional[tuple[str, float]]:
+) -> Optional[dict]:
     """
-    Check if any open position should be exited early.
-    
+    Evaluate whether an open position should be exited early.
+
+    Returns a decision dict if exit is warranted, None otherwise.
+    The engine is responsible for executing the sell.
+
     Args:
-        market: Current active market
+        position: The open position to evaluate
         signal: Latest composite signal
-        
+
     Returns:
-        (reason, pnl) if a position was closed, None otherwise
+        Decision dict with keys:
+            reason: Full human-readable reason string
+            reason_category: "trailing_stop" | "hard_stop" | "signal_reversal"
+            effective_trailing_pct: The final trailing stop % used
+            pressure_multiplier: BTC pressure multiplier applied
+            time_zone: "normal" | "TIGHT" | "FINAL"
+            btc_pressure: Raw BTC pressure value
+        Or None if no exit warranted.
     """
     exit_config = config_manager.config.exit
 
     if not exit_config.enabled:
         return None
-
-    position = order_manager._open_positions.get(market.condition_id)
-    if not position:
-        return None
-
-    # Update prices first (also tracks peak)
-    order_manager.update_position_prices(market.condition_id)
 
     now = datetime.now(timezone.utc)
 
@@ -146,11 +151,12 @@ def check_exit_conditions(
     # Clamp: never wider than 40%, never tighter than 2%
     effective_trailing = max(0.02, min(0.40, effective_trailing))
 
+    pressure_val = pressure.get("pressure", 0.0)
+    momentum_val = pressure.get("momentum", 0.0)
+
     # --- Log the exit check state when interesting ---
     if position.current_price > 0 and position.peak_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
-        pressure_val = pressure.get("pressure", 0.0)
-        momentum_val = pressure.get("momentum", 0.0)
 
         # Log when position is losing ground or BTC pressure is notable
         if drop_from_peak > 0.03 or abs(pressure_val) > 0.2:
@@ -165,6 +171,14 @@ def check_exit_conditions(
                 f"time_left={time_str}"
             )
 
+    # Base decision metadata (shared across all exit types)
+    base_decision = {
+        "effective_trailing_pct": effective_trailing,
+        "pressure_multiplier": pressure_multiplier,
+        "time_zone": time_zone_label,
+        "btc_pressure": pressure_val,
+    }
+
     # --- Check 1: Trailing stop (pressure-adjusted) ---
     if position.peak_price > 0 and position.current_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
@@ -175,13 +189,10 @@ def check_exit_conditions(
                 f"{drop_from_peak:.1%} from peak {position.peak_price:.3f} | "
                 f"base_stop={base_trailing:.0%} x pressure={pressure_multiplier:.2f} "
                 f"-> effective={effective_trailing:.1%} | "
-                f"BTC pressure={pressure.get('pressure', 0):+.2f} [{time_zone_label}]"
+                f"BTC pressure={pressure_val:+.2f} [{time_zone_label}]"
             )
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
-            is_dry = config_manager.config.mode != "live"
-            pnl = order_manager.sell_position(market.condition_id, reason=reason, is_dry_run=is_dry)
-            if pnl is not None:
-                return reason, pnl
+            return {**base_decision, "reason": reason, "reason_category": "trailing_stop"}
 
     # --- Check 2: Hard floor stop (NOT pressure-adjusted -- absolute safety net) ---
     if position.current_price > 0 and position.entry_price > 0:
@@ -194,10 +205,7 @@ def check_exit_conditions(
                 f"(hard limit: {exit_config.hard_stop_pct:.0%})"
             )
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
-            is_dry = config_manager.config.mode != "live"
-            pnl = order_manager.sell_position(market.condition_id, reason=reason, is_dry_run=is_dry)
-            if pnl is not None:
-                return reason, pnl
+            return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
 
     # --- Check 3: Signal reversal ---
     if signal and signal.recommended_side is not None:
@@ -212,13 +220,10 @@ def check_exit_conditions(
             reason = (
                 f"signal_reversal: holding {position.side.value.upper()} but "
                 f"signal={signal.composite_score:+.3f} | "
-                f"BTC pressure={pressure.get('pressure', 0):+.2f} "
+                f"BTC pressure={pressure_val:+.2f} "
                 f"(reversal threshold: +/-{exit_config.signal_reversal_threshold})"
             )
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
-            is_dry = config_manager.config.mode != "live"
-            pnl = order_manager.sell_position(market.condition_id, reason=reason, is_dry_run=is_dry)
-            if pnl is not None:
-                return reason, pnl
+            return {**base_decision, "reason": reason, "reason_category": "signal_reversal"}
 
     return None
