@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Clock, TrendingUp, DollarSign, Calendar, ChevronRight, ArrowLeft } from 'lucide-react'
+import { Clock, TrendingUp, DollarSign, Calendar, ChevronRight, ArrowLeft, Clipboard, Check, Loader2 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import StatsCards from './StatsCards'
 import TradeHistory from './TradeHistory'
@@ -49,6 +49,24 @@ export default function SessionsPanel() {
   const [sessionDetails, setSessionDetails] = useState(null)
   const [loading, setLoading] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState(null)
+  const [copyState, setCopyState] = useState('idle') // 'idle' | 'loading' | 'copied'
+
+  const handleCopyForAI = async (sessionId) => {
+    setCopyState('loading')
+    try {
+      const data = await get(`/api/sessions/${sessionId}/export`)
+      if (data?.export_text) {
+        await navigator.clipboard.writeText(data.export_text)
+        setCopyState('copied')
+        setTimeout(() => setCopyState('idle'), 2000)
+      } else {
+        setCopyState('idle')
+      }
+    } catch (e) {
+      console.error('Failed to copy session export:', e)
+      setCopyState('idle')
+    }
+  }
 
   // Fetch list of sessions
   useEffect(() => {
@@ -90,7 +108,7 @@ export default function SessionsPanel() {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div>
+          <div className="flex-1">
             <h2 className="text-lg font-display font-bold">
               Session #{sessionDetails.session.id}
             </h2>
@@ -104,6 +122,26 @@ export default function SessionsPanel() {
               </span>
             </div>
           </div>
+          <button
+            onClick={() => handleCopyForAI(sessionDetails.session.id)}
+            disabled={copyState === 'loading'}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer ${
+              copyState === 'copied'
+                ? 'bg-accent-green/10 text-accent-green border border-accent-green/20'
+                : copyState === 'loading'
+                ? 'bg-surface-3 text-text-dim border border-surface-4'
+                : 'bg-surface-2 text-text-secondary hover:text-text-primary hover:bg-surface-3 border border-surface-3'
+            }`}
+          >
+            {copyState === 'loading' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : copyState === 'copied' ? (
+              <Check className="w-3.5 h-3.5" />
+            ) : (
+              <Clipboard className="w-3.5 h-3.5" />
+            )}
+            {copyState === 'copied' ? 'Copied!' : 'Copy for AI'}
+          </button>
         </div>
 
         <StatsCards state={fakeState} />
