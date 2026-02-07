@@ -270,6 +270,26 @@ def get_trades_for_session(session_id: int) -> list[Trade]:
     return [_row_to_trade(r) for r in rows]
 
 
+def get_trades_with_log_data(session_id: int) -> list[tuple[Trade, Optional[str]]]:
+    """Get all trades for a session with their log data in one query.
+
+    Returns list of (Trade, raw_json_string) tuples. Avoids N+1 queries
+    when building session exports.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM trades WHERE session_id = ? ORDER BY timestamp ASC",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        trade = _row_to_trade(row)
+        log_data = row["trade_log_data"] if "trade_log_data" in row.keys() else None
+        results.append((trade, log_data))
+    return results
+
+
 def get_today_trades() -> list[Trade]:
     today = date.today().isoformat()
     conn = get_connection()
