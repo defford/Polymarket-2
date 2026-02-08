@@ -7,57 +7,37 @@
     "pm_macd_slow": 26,
     "pm_macd_signal": 9,
     "pm_momentum_lookback": 5,
-    "btc_ema_1m": [
-      5,
-      13
-    ],
-    "btc_ema_5m": [
-      8,
-      21
-    ],
-    "btc_ema_15m": [
-      9,
-      21,
-      55
-    ],
-    "btc_ema_1h": [
-      12,
-      26
-    ],
-    "btc_ema_4h": [
-      20,
-      50
-    ],
-    "btc_ema_1d": [
-      20,
-      50,
-      200
-    ],
-    "layer1_weight": 0.4,
-    "layer2_weight": 0.6,
-    "buy_threshold": 0.35
+    "btc_ema_1m": [5, 13],
+    "btc_ema_5m": [8, 21],
+    "btc_ema_15m": [9, 21, 55],
+    "btc_ema_1h": [12, 26],
+    "btc_ema_4h": [20, 50],
+    "btc_ema_1d": [20, 50, 200],
+    "layer1_weight": 0.7,
+    "layer2_weight": 0.3,
+    "buy_threshold": 0.1
   },
   "risk": {
     "max_position_size": 5,
-    "max_trades_per_window": 2,
-    "max_daily_loss": 20,
-    "min_signal_confidence": 0.5,
-    "max_consecutive_losses": 4,
-    "cooldown_minutes": 15,
+    "max_trades_per_window": 1,
+    "max_daily_loss": 15,
+    "min_signal_confidence": 0.35,
+    "max_consecutive_losses": 3,
+    "cooldown_minutes": 30,
     "stop_trading_minutes_before_close": 2,
     "max_entry_price": 0.65
   },
   "exit": {
     "enabled": true,
-    "trailing_stop_pct": 0.45,
+    "trailing_stop_pct": 0.2,
     "hard_stop_pct": 0.5,
-    "signal_reversal_threshold": 0.2,
+    "signal_reversal_threshold": 0.15,
     "tighten_at_seconds": 180,
-    "tightened_trailing_pct": 0.25,
+    "tightened_trailing_pct": 0.1,
     "final_seconds": 60,
-    "final_trailing_pct": 0.15,
-    "min_hold_seconds": 180,
-    "pressure_scaling_enabled": false,
+    "final_trailing_pct": 0.05,
+    "min_hold_seconds": 20,
+    "pressure_scaling_enabled": true,
     "pressure_widen_max": 1.5,
     "pressure_tighten_min": 0.4,
     "pressure_neutral_zone": 0.15
@@ -70,5 +50,5 @@
     "poll_interval_seconds": 10,
     "market_discovery_interval_seconds": 30
   },
-  "mode": "live"
+  "mode": "dry_run"
 }
