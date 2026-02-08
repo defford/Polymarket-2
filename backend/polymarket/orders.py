@@ -160,7 +160,56 @@ class OrderManager:
 
             if resp.get("success") or resp.get("orderID"):
                 trade.order_id = resp.get("orderID", resp.get("order_id", "unknown"))
-                trade.status = OrderStatus.FILLED  # Simplified; real impl would check
+                
+                # VERIFY ORDER STATUS (Fix for Ghost Trades)
+                # Ensure the order wasn't rejected or immediately cancelled
+                try:
+                    import time
+                    # Poll for fill for up to 5 seconds
+                    max_retries = 5
+                    filled = False
+                    
+                    for i in range(max_retries):
+                        time.sleep(1.0)
+                        order_check = polymarket_client.get_order(trade.order_id)
+                        order_status = order_check.get("status") if order_check else "UNKNOWN"
+                        
+                        if order_status == "FILLED":
+                            filled = True
+                            # Try to get avg fill price
+                            if "avgPrice" in order_check:
+                                price = float(order_check["avgPrice"])
+                            elif "matchedAvgPrice" in order_check:
+                                price = float(order_check["matchedAvgPrice"])
+                            break
+                        elif order_status in ("CANCELED", "KILLED", "REJECTED"):
+                            logger.warning(f"❌ Order {trade.order_id} was {order_status}. Not counting as trade.")
+                            trade.status = OrderStatus.REJECTED
+                            trade.notes = f"REJECTED: Order status {order_status}"
+                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                            return None
+                        
+                        # If OPEN, we wait and retry.
+                        # If we reach the end of retries and it's still OPEN, we cancel it.
+                    
+                    if not filled:
+                        logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling to prevent phantom position.")
+                        polymarket_client.cancel_order(trade.order_id)
+                        trade.status = OrderStatus.CANCELLED
+                        trade.notes = f"CANCELLED: Timed out waiting for fill"
+                        trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                        return None
+                        
+                    # If we get here, it is FILLED
+                    trade.status = OrderStatus.FILLED
+                
+                except Exception as e:
+                    logger.warning(f"Could not verify order {trade.order_id}: {e}")
+                    # In case of API error, we err on side of caution and DO NOT assume fill
+                    # But we should probably check if we can verify via trades list
+                    logger.warning("⚠️ Assuming order FAILED verification due to API error")
+                    return None
+
                 trade.notes = f"LIVE: {order_type} {side.value} {size_tokens:.2f} @ {price}"
                 logger.info(f"✅ LIVE ORDER: {trade.notes} (id={trade.order_id})")
 
@@ -341,10 +390,39 @@ class OrderManager:
                     return None
 
                 order_id = resp.get("orderID", resp.get("order_id", "unknown"))
+                
+                # UPDATE WITH ACTUAL FILL PRICE
+                try:
+                    import time
+                    time.sleep(1.0)  # Wait for fill
+                    order_details = polymarket_client.get_order(order_id)
+                    actual_price = None
+                    
+                    # Try to find average fill price in order details
+                    # Note: Field names vary by API version (avgPrice, price, matchedAvgPrice)
+                    if order_details:
+                        if "avgPrice" in order_details:
+                            actual_price = float(order_details["avgPrice"])
+                        elif "matchedAvgPrice" in order_details:
+                            actual_price = float(order_details["matchedAvgPrice"])
+                    
+                    if actual_price and actual_price > 0:
+                        logger.info(f"Refining exit price: {sell_price:.3f} -> {actual_price:.3f}")
+                        sell_price = actual_price
+                        
+                        # Recalculate P&L with actual price
+                        proceeds = sell_price * position.size
+                        estimated_fee = proceeds * 0.02  # Keep conservative fee estimate
+                        net_proceeds = proceeds - estimated_fee
+                        pnl = net_proceeds - position.cost
+                        
+                except Exception as e:
+                    logger.warning(f"Could not fetch actual fill price for {order_id}, using estimate: {e}")
+
                 logger.info(
                     f"🔴 LIVE EXIT ({exit_reason}): "
                     f"SELL {position.side.value.upper()} "
-                    f"{position.size:.2f} tokens @ ~{sell_price:.3f} | "
+                    f"{position.size:.2f} tokens @ {sell_price:.3f} | "
                     f"P&L: ${pnl:+.2f} (id={order_id})"
                 )
             except Exception as e:

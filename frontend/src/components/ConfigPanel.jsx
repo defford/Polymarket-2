@@ -86,6 +86,24 @@ function SelectParam({ label, value, options, onChange }) {
   )
 }
 
+function ToggleParam({ label, value, onChange, color = 'bg-accent-green' }) {
+  return (
+    <div className="flex items-center justify-between">
+      <label className="data-label">{label}</label>
+      <button
+        onClick={() => onChange(!value)}
+        className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${
+          value ? color : 'bg-surface-3'
+        }`}
+      >
+        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+          value ? 'translate-x-5' : 'translate-x-0.5'
+        }`} />
+      </button>
+    </div>
+  )
+}
+
 export default function ConfigPanel({ config, onUpdate }) {
   const [local, setLocal] = useState(null)
   const [dirty, setDirty] = useState(false)
@@ -296,6 +314,13 @@ export default function ConfigPanel({ config, onUpdate }) {
                 min={5} max={120} step={5} unit="min" onChange={(v) => update('risk', 'cooldown_minutes', v)} />
               <NumberParam label="Stop Before Close" value={risk.stop_trading_minutes_before_close ?? 2}
                 min={0} max={10} step={1} unit="min" onChange={(v) => update('risk', 'stop_trading_minutes_before_close', v)} />
+              <SliderParam
+                label="Max Entry Price"
+                value={risk.max_entry_price ?? 0.8}
+                min={0.1} max={0.95} step={0.05}
+                description="Max price (cents) to pay for a contract"
+                onChange={(v) => update('risk', 'max_entry_price', v)}
+              />
             </div>
           </Section>
 
@@ -321,22 +346,14 @@ export default function ConfigPanel({ config, onUpdate }) {
               <NumberParam label="Poll Interval" value={trading.poll_interval_seconds ?? 10}
                 min={3} max={60} step={1} unit="s" onChange={(v) => update('trading', 'poll_interval_seconds', v)} />
               <NumberParam label="Market Discovery Interval" value={trading.market_discovery_interval_seconds ?? 30}
-                min={10} max={120} step={5} unit="s" onChange={(v) => update('trading', 'market_discovery_interval_seconds', v)} />
+                min={10} max={120} step={5} unit="s"                 onChange={(v) => update('trading', 'market_discovery_interval_seconds', v)} />
 
               <div className="border-t border-surface-2 pt-3">
-                <div className="flex items-center justify-between">
-                  <label className="data-label">Use FOK for Strong Signals</label>
-                  <button
-                    onClick={() => update('trading', 'use_fok_for_strong_signals', !trading.use_fok_for_strong_signals)}
-                    className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${
-                      trading.use_fok_for_strong_signals ? 'bg-accent-green' : 'bg-surface-3'
-                    }`}
-                  >
-                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                      trading.use_fok_for_strong_signals ? 'translate-x-5' : 'translate-x-0.5'
-                    }`} />
-                  </button>
-                </div>
+                <ToggleParam
+                  label="Use FOK for Strong Signals"
+                  value={trading.use_fok_for_strong_signals}
+                  onChange={(v) => update('trading', 'use_fok_for_strong_signals', v)}
+                />
                 {trading.use_fok_for_strong_signals && (
                   <div className="mt-2">
                     <SliderParam
@@ -348,6 +365,82 @@ export default function ConfigPanel({ config, onUpdate }) {
                   </div>
                 )}
               </div>
+            </div>
+          </Section>
+
+          <Section
+            icon={RotateCcw}
+            title="Exit Strategy"
+            description="Trailing stops and position management."
+            color="text-accent-red"
+          >
+            <div className="space-y-4">
+              <ToggleParam
+                label="Enable Exit Strategy"
+                value={local.exit?.enabled ?? true}
+                onChange={(v) => update('exit', 'enabled', v)}
+                color="bg-accent-red"
+              />
+
+              {local.exit?.enabled && (
+                <div className="space-y-3 pt-2 animate-fade-in">
+                  <SliderParam
+                    label="Trailing Stop %"
+                    value={local.exit?.trailing_stop_pct ?? 0.2}
+                    min={0.05} max={0.5} step={0.01}
+                    onChange={(v) => update('exit', 'trailing_stop_pct', v)}
+                  />
+                  <SliderParam
+                    label="Hard Stop %"
+                    value={local.exit?.hard_stop_pct ?? 0.5}
+                    min={0.1} max={0.9} step={0.05}
+                    onChange={(v) => update('exit', 'hard_stop_pct', v)}
+                  />
+                  <SliderParam
+                    label="Reversal Threshold"
+                    value={local.exit?.signal_reversal_threshold ?? 0.15}
+                    min={0.05} max={0.5} step={0.01}
+                    onChange={(v) => update('exit', 'signal_reversal_threshold', v)}
+                  />
+                  
+                  <div className="pt-2 border-t border-surface-2">
+                    <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                      Time Decay
+                    </p>
+                    <div className="space-y-3">
+                      <NumberParam label="Tighten At (sec)" value={local.exit?.tighten_at_seconds ?? 180}
+                        min={60} max={600} step={10} onChange={(v) => update('exit', 'tighten_at_seconds', v)} />
+                      <NumberParam label="Tightened Stop %" value={local.exit?.tightened_trailing_pct ?? 0.10}
+                        min={0.01} max={0.3} step={0.01} onChange={(v) => update('exit', 'tightened_trailing_pct', v)} />
+                      <NumberParam label="Final Seconds" value={local.exit?.final_seconds ?? 60}
+                        min={10} max={300} step={10} onChange={(v) => update('exit', 'final_seconds', v)} />
+                      <NumberParam label="Final Stop %" value={local.exit?.final_trailing_pct ?? 0.05}
+                        min={0.01} max={0.2} step={0.01} onChange={(v) => update('exit', 'final_trailing_pct', v)} />
+                      <NumberParam label="Min Hold (sec)" value={local.exit?.min_hold_seconds ?? 20}
+                        min={0} max={120} step={5} onChange={(v) => update('exit', 'min_hold_seconds', v)} />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-surface-2">
+                    <ToggleParam
+                      label="Pressure Scaling (BTC)"
+                      value={local.exit?.pressure_scaling_enabled ?? true}
+                      onChange={(v) => update('exit', 'pressure_scaling_enabled', v)}
+                      color="bg-accent-red"
+                    />
+                    {local.exit?.pressure_scaling_enabled && (
+                      <div className="space-y-3 mt-3">
+                        <NumberParam label="Max Widen Multiplier" value={local.exit?.pressure_widen_max ?? 1.5}
+                          min={1.0} max={3.0} step={0.1} onChange={(v) => update('exit', 'pressure_widen_max', v)} />
+                        <NumberParam label="Min Tighten Multiplier" value={local.exit?.pressure_tighten_min ?? 0.4}
+                          min={0.1} max={1.0} step={0.1} onChange={(v) => update('exit', 'pressure_tighten_min', v)} />
+                        <NumberParam label="Neutral Zone" value={local.exit?.pressure_neutral_zone ?? 0.15}
+                          min={0.05} max={0.5} step={0.01} onChange={(v) => update('exit', 'pressure_neutral_zone', v)} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </Section>
         </div>

@@ -17,7 +17,7 @@ from typing import Optional
 
 from config import config_manager
 from models import (
-    BotStatus, BotState, CompositeSignal, MarketInfo, Side, Position, DailyStats,
+    BotStatus, BotState, CompositeSignal, MarketInfo, Side,
     MarketStateSnapshot, Session,
 )
 from polymarket.client import polymarket_client
@@ -27,6 +27,7 @@ from binance.client import binance_client
 from signals.engine import signal_engine
 from trading.risk import risk_manager
 from trading.exits import evaluate_exit
+from polymarket.stream import market_stream
 import database as db
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ class TradingEngine:
     def __init__(self):
         self._status = BotStatus.STOPPED
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._strategy_task: Optional[asyncio.Task] = None
+        self._risk_task: Optional[asyncio.Task] = None
         self._last_signal: Optional[CompositeSignal] = None
         self._previous_market_id: Optional[str] = None
         self._total_pnl = 0.0
@@ -98,8 +100,12 @@ class TradingEngine:
         self._total_pnl = 0.0
         risk_manager.reset_session_stats()
 
+        # Start WebSocket stream for real-time prices
+        await market_stream.start()
+
         self._running = True
-        self._task = asyncio.create_task(self._run_loop())
+        self._strategy_task = asyncio.create_task(self._slow_strategy_loop())
+        self._risk_task = asyncio.create_task(self._fast_risk_loop())
         logger.info(f"🚀 Trading engine started in {self._status.value} mode")
 
     async def stop(self):
@@ -107,12 +113,17 @@ class TradingEngine:
         logger.info("Stopping trading engine...")
         self._running = False
 
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        # Stop WebSocket price stream
+        await market_stream.stop()
+
+        # Cancel both loop tasks
+        for task in [self._strategy_task, self._risk_task]:
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Cancel any open orders
         order_manager.cancel_all()
@@ -130,11 +141,18 @@ class TradingEngine:
         self._status = BotStatus.STOPPED
         logger.info("Trading engine stopped")
 
-    async def _run_loop(self):
-        """Main trading loop."""
+    # ------------------------------------------------------------------
+    # Slow strategy loop  (runs every poll_interval_seconds ~10s)
+    # Handles: market discovery, signal computation, trade entries,
+    #          full exit evaluation (BTC pressure + signal reversal),
+    #          and dashboard broadcast.
+    # ------------------------------------------------------------------
+
+    async def _slow_strategy_loop(self):
+        """Strategy & signal loop — runs every poll_interval_seconds."""
         config = config_manager.config.trading
 
-        logger.info("Entering main trading loop")
+        logger.info("Entering strategy loop")
 
         while self._running:
             try:
@@ -147,7 +165,7 @@ class TradingEngine:
                     await asyncio.sleep(config.market_discovery_interval_seconds)
                     continue
 
-                # Step 2: Update market prices for dashboard
+                # Step 2: Update market prices via HTTP (accurate for signals)
                 self._update_market_prices(market)
 
                 # Step 3: Check if too close to market close
@@ -169,34 +187,19 @@ class TradingEngine:
                 # Step 5: Check risk and maybe trade
                 await self._maybe_trade(market, composite_signal)
 
-                # Step 5.5: Check exit conditions for open positions
+                # Step 6: Full exit evaluation (signal reversal + BTC pressure)
+                # The fast loop handles price-based stops in real-time; this
+                # catches BTC-pressure-adjusted trailing stops and signal flips.
                 if order_manager.has_position(market.condition_id):
-                    # Update prices first (also tracks peak for trailing stop)
-                    order_manager.update_position_prices(market.condition_id)
-
                     position = order_manager._open_positions.get(market.condition_id)
                     if position:
                         exit_decision = evaluate_exit(position, composite_signal)
                         if exit_decision:
-                            sell_state = self._capture_market_state(market, composite_signal)
-                            is_dry = config_manager.config.mode != "live"
-                            pnl = order_manager.sell_position(
+                            await self._execute_exit(
                                 market.condition_id,
-                                reason=exit_decision["reason"],
-                                is_dry_run=is_dry,
-                                sell_state_snapshot=sell_state,
+                                exit_decision["reason"],
+                                exit_decision["reason_category"],
                             )
-                            if pnl is not None:
-                                risk_manager.record_trade_result(pnl, market.condition_id)
-                                self._total_pnl += pnl
-                                logger.info(
-                                    f"💰 Early exit ({exit_decision['reason_category']}): "
-                                    f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
-                                )
-
-                # Step 6: Update open position prices
-                for pos in order_manager.open_positions:
-                    order_manager.update_position_prices(pos.market_condition_id)
 
                 # Step 7: Broadcast state via WebSocket
                 await self._broadcast_state(market, composite_signal)
@@ -209,13 +212,146 @@ class TradingEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Trading loop error: {e}", exc_info=True)
+                logger.error(f"Strategy loop error: {e}", exc_info=True)
                 self._status = BotStatus.ERROR
                 await asyncio.sleep(10)  # Back off on error
 
+    # ------------------------------------------------------------------
+    # Fast risk loop  (runs every ~0.25s)
+    # Reads prices from the WebSocket cache and checks stop-loss
+    # conditions.  This is the sub-second safety net that prevents
+    # the slippage we saw with 10-second polling.
+    # ------------------------------------------------------------------
+
+    async def _fast_risk_loop(self):
+        """High-frequency exit check — reads from WS price cache."""
+        logger.info("Entering fast risk loop")
+
+        while self._running:
+            try:
+                exit_config = config_manager.config.exit
+                if not exit_config.enabled:
+                    await asyncio.sleep(1.0)
+                    continue
+
+                # Update dashboard market prices from WS cache
+                market = market_discovery.current_market
+                if market:
+                    up_mid = market_stream.prices.get_midpoint(market.up_token_id)
+                    down_mid = market_stream.prices.get_midpoint(market.down_token_id)
+                    if up_mid is not None:
+                        market.up_price = up_mid
+                    if down_mid is not None:
+                        market.down_price = down_mid
+
+                # Iterate over all open positions
+                exited = False
+                for condition_id, position in list(order_manager._open_positions.items()):
+                    ws_price = market_stream.prices.get_midpoint(position.token_id)
+                    if ws_price is None or not market_stream.is_price_fresh(position.token_id):
+                        continue
+
+                    # Update position with real-time WS price
+                    position.current_price = ws_price
+                    position.unrealized_pnl = (ws_price - position.entry_price) * position.size
+                    if ws_price > position.peak_price:
+                        position.peak_price = ws_price
+
+                    # Check minimum hold time
+                    if position.entry_time:
+                        held = (datetime.now(timezone.utc) - position.entry_time).total_seconds()
+                        if held < exit_config.min_hold_seconds:
+                            continue
+
+                    # Determine time-based trailing stop
+                    time_remaining = market_discovery.time_until_close()
+                    base_trailing = exit_config.trailing_stop_pct
+                    time_zone = "normal"
+                    if time_remaining is not None:
+                        if time_remaining <= exit_config.final_seconds:
+                            base_trailing = exit_config.final_trailing_pct
+                            time_zone = "FINAL"
+                        elif time_remaining <= exit_config.tighten_at_seconds:
+                            base_trailing = exit_config.tightened_trailing_pct
+                            time_zone = "TIGHT"
+
+                    # --- Trailing stop (no BTC pressure — slow loop handles that) ---
+                    if position.peak_price > 0 and position.current_price > 0:
+                        drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
+                        if drop_from_peak >= base_trailing:
+                            reason = (
+                                f"trailing_stop: price {position.current_price:.3f} dropped "
+                                f"{drop_from_peak:.1%} from peak {position.peak_price:.3f} | "
+                                f"effective={base_trailing:.1%} [{time_zone}] (WS fast-check)"
+                            )
+                            logger.info(f"🛑 FAST EXIT -- {reason}")
+                            await self._execute_exit(condition_id, reason, "trailing_stop")
+                            exited = True
+                            break
+
+                    # --- Hard stop (absolute safety net) ---
+                    if position.entry_price > 0 and position.current_price > 0:
+                        drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
+                        if drop_from_entry >= exit_config.hard_stop_pct:
+                            reason = (
+                                f"hard_stop: price {position.current_price:.3f} dropped "
+                                f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
+                                f"(hard limit: {exit_config.hard_stop_pct:.0%}) (WS fast-check)"
+                            )
+                            logger.info(f"🛑 FAST EXIT -- {reason}")
+                            await self._execute_exit(condition_id, reason, "hard_stop")
+                            exited = True
+                            break
+
+                await asyncio.sleep(1.0 if exited else 0.25)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Fast risk loop error: {e}", exc_info=True)
+                await asyncio.sleep(1.0)
+
+    # ------------------------------------------------------------------
+    # Shared exit execution helper
+    # ------------------------------------------------------------------
+
+    async def _execute_exit(self, condition_id: str, reason: str, reason_category: str):
+        """
+        Execute a position exit.  Shared by both the fast and slow loops.
+
+        Captures market state, places the sell, records the P&L, and logs.
+        """
+        market = market_discovery.current_market
+        signal = self._last_signal or CompositeSignal(
+            composite_score=0.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        sell_state = None
+        if market:
+            try:
+                sell_state = self._capture_market_state(market, signal)
+            except Exception as e:
+                logger.debug(f"Error capturing sell state: {e}")
+
+        is_dry = config_manager.config.mode != "live"
+        pnl = order_manager.sell_position(
+            condition_id,
+            reason=reason,
+            is_dry_run=is_dry,
+            sell_state_snapshot=sell_state,
+        )
+        if pnl is not None:
+            risk_manager.record_trade_result(pnl, condition_id)
+            self._total_pnl += pnl
+            logger.info(
+                f"💰 Early exit ({reason_category}): "
+                f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
+            )
+
     async def _ensure_active_market(self) -> Optional[MarketInfo]:
         """
-        Ensure we have an active market. Handles rotation.
+        Ensure we have an active market. Handles rotation and WS subscriptions.
         """
         market = await market_discovery.scan_for_active_market()
 
@@ -227,6 +363,11 @@ class TradingEngine:
 
             self._previous_market_id = market.condition_id
             logger.info(f"📊 Active market: {market.question}")
+
+            # Subscribe to new market tokens via WebSocket for real-time prices
+            tokens = [t for t in [market.up_token_id, market.down_token_id] if t]
+            if tokens:
+                market_stream.subscribe(tokens)
 
         return market
 
@@ -426,26 +567,43 @@ class TradingEngine:
                 )
 
         # Determine resolution: did BTC go up or down?
-        # The simplest approach: check BTC price change over the window
-        # In practice, Polymarket uses a specific oracle/price source
-        btc_price = binance_client.get_current_price()
+        # Query Polymarket API for the official outcome
+        resolution = 0.5  # Default to neutral/unknown
 
-        # For dry-run, we simulate resolution based on final token price
-        # In live mode, the market resolves automatically (token → $1 or $0)
         try:
-            final_price = polymarket_client.get_midpoint(pos.token_id)
-        except Exception:
-            final_price = 0.5  # Unknown — assume neutral
-
-        # If market has resolved: token price should be near 0 or 1
-        if final_price > 0.8:
-            resolution = 1.0  # Won
-        elif final_price < 0.2:
-            resolution = 0.0  # Lost
-        else:
-            # Market may not have resolved yet, estimate based on direction
-            # This is a simplification — in production you'd wait for settlement
-            resolution = final_price
+            market_data = polymarket_client.get_market(old_condition_id)
+            
+            # Check if market is resolved/closed
+            if market_data and (market_data.get("closed") or market_data.get("resolved")):
+                # Check tokens for explicit winner flag
+                tokens = market_data.get("tokens", [])
+                winner_found = False
+                
+                for t in tokens:
+                    if t.get("winner") is True:
+                        winner_found = True
+                        if t.get("token_id") == pos.token_id:
+                            resolution = 1.0  # We won
+                        else:
+                            # Verify if this matches the other side (implies we lost)
+                            resolution = 0.0  # We lost
+                        break
+                
+                if not winner_found:
+                    logger.warning(f"Market {old_condition_id} closed but no winner flag found in tokens")
+                    # Fallback: check prices if avail, or keep 0.5
+            
+            # If still 0.5, try the price method as backup (but carefully)
+            if resolution == 0.5:
+                final_price = polymarket_client.get_midpoint(pos.token_id)
+                if final_price > 0.9:
+                    resolution = 1.0
+                elif final_price < 0.1:
+                    resolution = 0.0
+                
+        except Exception as e:
+            logger.error(f"Error determining resolution for {old_condition_id}: {e}")
+            resolution = 0.5
 
         # Capture sell state snapshot before resolving
         # Use a minimal signal since we're at market close

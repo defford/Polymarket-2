@@ -9,7 +9,7 @@ from typing import Optional
 
 from config import config_manager
 from models import CompositeSignal, OrderStatus
-import database as db
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,25 +99,10 @@ class RiskManager:
         config = config_manager.config.risk
         base_size = config.max_position_size
 
-        # Reduce size after consecutive losses (scale down by 25% per loss)
-        if self._consecutive_losses > 0:
-            scale = max(0.25, 1.0 - (self._consecutive_losses * 0.25))
-            base_size *= scale
-
         # Ensure we don't exceed daily loss limit
         remaining_budget = config.max_daily_loss + self._daily_pnl  # pnl is negative when losing
         if remaining_budget < base_size:
-            base_size = max(5.0, remaining_budget)  # minimum $5 or remaining budget
-
-        # Ensure minimum trade size for Polymarket
-        if base_size < 5.0 and base_size > 0:
-            # If we can't afford $5, we can't trade at all (or we risk it, but let's assume we stop)
-            # However, if remaining_budget < 5.0, we probably should have stopped already.
-            # But just in case, clamp to 5.0 if we have budget, or 0 if we don't.
-            if remaining_budget >= 5.0:
-                base_size = 5.0
-            else:
-                base_size = 0.0 # Can't trade
+            base_size = max(0.0, remaining_budget)
 
         return round(base_size, 2)
 

@@ -148,8 +148,6 @@ def evaluate_exit(
     # --- Apply pressure multiplier to trailing stop ---
     effective_trailing = base_trailing * pressure_multiplier
 
-    # Clamp: never wider than 40%, never tighter than 2%
-    effective_trailing = max(0.02, min(0.40, effective_trailing))
 
     pressure_val = pressure.get("pressure", 0.0)
     momentum_val = pressure.get("momentum", 0.0)

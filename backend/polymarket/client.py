@@ -257,6 +257,15 @@ class PolymarketClient:
             logger.error(f"Error getting trades: {e}")
             return []
 
+    def get_order(self, order_id: str) -> dict:
+        """Get details of a specific order."""
+        self._require_auth()
+        try:
+            return self.client.get_order(order_id)
+        except Exception as e:
+            logger.error(f"Error getting order {order_id}: {e}")
+            return {}
+
     def _require_auth(self):
         if not self._authenticated:
             raise RuntimeError(
