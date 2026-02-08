@@ -85,15 +85,43 @@ else
     info ".env file exists"
 fi
 
-# Check for dashboard auth
-if grep -q '^DASHBOARD_PASSWORD_HASH=$' .env 2>/dev/null; then
+# ── Step 3b: Dashboard authentication ─────────────────────────
+echo ""
+echo "── Step 3b: Dashboard authentication..."
+if [ -f "data/caddy_auth" ]; then
+    info "data/caddy_auth already exists (dashboard is password-protected)"
+else
+    warn "No dashboard auth configured — your dashboard will be PUBLIC!"
+    read -p "   Set up password protection now? (y/n) " -n 1 -r
     echo ""
-    warn "DASHBOARD_PASSWORD_HASH is empty in .env!"
-    echo "   Your dashboard will NOT be protected until you set this."
-    echo "   Generate a hash with:"
-    echo "   docker run caddy:2-alpine caddy hash-password --plaintext 'YOUR_PASSWORD'"
-    echo "   Then paste the hash into .env"
-    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        read -p "   Username [admin]: " AUTH_USER
+        AUTH_USER=${AUTH_USER:-admin}
+        read -sp "   Password: " AUTH_PASS
+        echo ""
+        if [ -z "$AUTH_PASS" ]; then
+            error "Password cannot be empty!"
+            exit 1
+        fi
+        # Generate bcrypt hash using Caddy (pull image if needed)
+        echo "   Generating password hash..."
+        HASH=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "$AUTH_PASS" 2>/dev/null)
+        if [ -z "$HASH" ]; then
+            error "Failed to generate password hash"
+            exit 1
+        fi
+        # Write the Caddy basic_auth snippet
+        cat > data/caddy_auth << AUTHEOF
+basic_auth {
+	${AUTH_USER} ${HASH}
+}
+AUTHEOF
+        info "Dashboard auth configured (user: ${AUTH_USER})"
+    else
+        # Create a no-op auth file so Caddy doesn't fail on missing import
+        echo "# No authentication configured" > data/caddy_auth
+        warn "Dashboard will be accessible without a password!"
+    fi
 fi
 
 # ── Step 4: Docker build ──────────────────────────────────────
@@ -122,7 +150,7 @@ for i in $(seq 1 $MAX_WAIT); do
         echo ""
         DROPLET_IP=$(curl -s ifconfig.me 2>/dev/null || echo '<your-ip>')
         info "Dashboard: http://${DROPLET_IP}"
-        echo "   (Login with the DASHBOARD_USER / password you set in .env)"
+        echo "   (Login with the username/password you set during setup)"
         echo ""
         echo "═══════════════════════════════════════════════════"
         echo "  Deployment complete! 🚀"

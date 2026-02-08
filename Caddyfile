@@ -8,10 +8,8 @@
 # ─────────────────────────────────────────────────────────────
 
 :80 {
-	# Dashboard authentication (credentials from .env)
-	basic_auth {
-		{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
-	}
+	# Dashboard authentication (credentials from data/caddy_auth)
+	import /etc/caddy/auth
 
 	# API and WebSocket → backend
 	handle /api/* {
