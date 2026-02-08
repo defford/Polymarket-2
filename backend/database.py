@@ -2,6 +2,7 @@
 SQLite database for persisting trades, P&L, and bot state.
 """
 
+import os
 import sqlite3
 import json
 from datetime import datetime, date
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from models import Trade, DailyStats, OrderStatus, Side, TradeLogEntry, Session
 
-DB_PATH = Path(__file__).parent.parent / "bot_data.db"
+DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent.parent / "bot_data.db"))
 
 
 def get_connection() -> sqlite3.Connection:

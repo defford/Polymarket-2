@@ -134,7 +134,10 @@ class ConfigManager:
     Persists to a JSON file so settings survive restarts.
     """
 
-    CONFIG_FILE = Path(__file__).parent.parent / "bot_config.json"
+    CONFIG_FILE = Path(os.environ.get(
+        "CONFIG_FILE",
+        Path(__file__).parent.parent / "bot_config.json",
+    ))
 
     def __init__(self):
         self._lock = threading.Lock()

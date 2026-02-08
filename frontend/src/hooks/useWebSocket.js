@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const WS_URL = `ws://${window.location.hostname}:${window.location.port || '5173'}/ws/dashboard`
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/dashboard`
 
 export function useWebSocket() {
   const [state, setState] = useState(null)

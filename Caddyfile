@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────
+# Caddyfile for Polymarket Trading Bot
+#
+# Usage:
+#   Development / IP-only:  Change ":80" below (already set)
+#   Production with domain: Replace ":80" with "yourdomain.com"
+#                           Caddy will auto-provision HTTPS via Let's Encrypt
+# ─────────────────────────────────────────────────────────────
+
+:80 {
+	# API and WebSocket → backend
+	handle /api/* {
+		reverse_proxy bot:8000
+	}
+
+	handle /ws/* {
+		reverse_proxy bot:8000
+	}
+
+	# Health check shortcut
+	handle /docs* {
+		reverse_proxy bot:8000
+	}
+
+	# Everything else → React SPA (served by FastAPI)
+	handle {
+		reverse_proxy bot:8000
+	}
+}

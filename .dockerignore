@@ -1,0 +1,35 @@
+# Version control
+.git/
+.gitignore
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node (rebuilt in Docker)
+frontend/node_modules/
+frontend/dist/
+
+# Database (mounted via volume)
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Secrets
+.env
+
+# IDE / OS
+.cursor/
+.DS_Store
+.vscode/
+
+# Exports
+trade_log.json
+
+# Docker
+Dockerfile
+docker-compose.yml
+Caddyfile

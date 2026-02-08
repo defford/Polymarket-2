@@ -12,9 +12,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+from pathlib import Path
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import config_manager, API_HOST, API_PORT
 from models import BotState, ConfigUpdateRequest
@@ -120,12 +123,18 @@ async def broadcast_state(data: dict):
 trading_engine.set_ws_broadcast(broadcast_state)
 
 
+# --- Frontend static files ---
+# Check if the built React app exists (from Docker multi-stage build)
+_frontend_dist = Path(__file__).parent / "frontend" / "dist"
+
 # --- REST Endpoints ---
 
-@app.get("/", include_in_schema=False)
-async def root():
-    """Redirect root to API docs."""
-    return RedirectResponse(url="/docs")
+if not _frontend_dist.exists():
+    # No frontend build — redirect root to API docs (dev mode)
+    @app.get("/", include_in_schema=False)
+    async def root():
+        """Redirect root to API docs."""
+        return RedirectResponse(url="/docs")
 
 
 @app.get("/api/status")
@@ -598,6 +607,13 @@ async def websocket_dashboard(websocket: WebSocket):
             ws_manager.disconnect(websocket)
         except ValueError:
             pass
+
+
+# --- Static file serving (production) ---
+# Mount AFTER all API/WS routes so /api/* and /ws/* take priority
+if _frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    logger.info(f"Serving frontend from {_frontend_dist}")
 
 
 # --- Entry point ---

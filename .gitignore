@@ -21,5 +21,8 @@ __pycache__/
 # Exports
 trade_log.json
 
+# Docker persistent data
+data/
+
 # OS
 .DS_Store
