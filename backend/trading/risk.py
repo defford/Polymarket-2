@@ -94,15 +94,27 @@ class RiskManager:
     def get_position_size(self) -> float:
         """
         Get the allowed position size for the next trade.
-        Could be reduced based on drawdown, consecutive losses, etc.
+        Reduced based on consecutive losses to limit drawdown.
         """
         config = config_manager.config.risk
         base_size = config.max_position_size
 
+        # Reduce size after consecutive losses (scale down by 25% per loss)
+        if self._consecutive_losses > 0:
+            scale = max(0.25, 1.0 - (self._consecutive_losses * 0.25))
+            base_size *= scale
+
         # Ensure we don't exceed daily loss limit
         remaining_budget = config.max_daily_loss + self._daily_pnl  # pnl is negative when losing
         if remaining_budget < base_size:
-            base_size = max(0.0, remaining_budget)
+            base_size = max(5.0, remaining_budget)  # minimum $5 or remaining budget
+
+        # Ensure minimum trade size for Polymarket
+        if base_size < 5.0 and base_size > 0:
+            if remaining_budget >= 5.0:
+                base_size = 5.0
+            else:
+                base_size = 0.0  # Can't trade
 
         return round(base_size, 2)
 
