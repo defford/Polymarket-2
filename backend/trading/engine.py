@@ -48,6 +48,7 @@ class TradingEngine:
         self._total_pnl = 0.0
         self._ws_broadcast_fn = None  # Set by main.py for WebSocket broadcasts
         self._current_session_id: Optional[int] = None
+        self._position_lock = asyncio.Lock()  # Protects _open_positions from concurrent access
 
     @property
     def status(self) -> BotStatus:
@@ -187,6 +188,12 @@ class TradingEngine:
                 # Step 5: Check risk and maybe trade
                 await self._maybe_trade(market, composite_signal)
 
+                # Step 5.5: Update position prices via HTTP when WS is stale
+                if order_manager.has_position(market.condition_id):
+                    pos = order_manager._open_positions.get(market.condition_id)
+                    if pos and not market_stream.is_price_fresh(pos.token_id):
+                        order_manager.update_position_prices(market.condition_id)
+
                 # Step 6: Full exit evaluation (signal reversal + BTC pressure)
                 # The fast loop handles price-based stops in real-time; this
                 # catches BTC-pressure-adjusted trailing stops and signal flips.
@@ -320,34 +327,41 @@ class TradingEngine:
         Execute a position exit.  Shared by both the fast and slow loops.
 
         Captures market state, places the sell, records the P&L, and logs.
+        Protected by _position_lock to prevent concurrent exit on the same position.
         """
-        market = market_discovery.current_market
-        signal = self._last_signal or CompositeSignal(
-            composite_score=0.0,
-            timestamp=datetime.now(timezone.utc),
-        )
+        async with self._position_lock:
+            # Check position still exists (may have been closed by other loop)
+            if not order_manager.has_position(condition_id):
+                logger.debug(f"Position {condition_id[:16]} already closed, skipping exit")
+                return
 
-        sell_state = None
-        if market:
-            try:
-                sell_state = self._capture_market_state(market, signal)
-            except Exception as e:
-                logger.debug(f"Error capturing sell state: {e}")
-
-        is_dry = config_manager.config.mode != "live"
-        pnl = await order_manager.sell_position(
-            condition_id,
-            reason=reason,
-            is_dry_run=is_dry,
-            sell_state_snapshot=sell_state,
-        )
-        if pnl is not None:
-            risk_manager.record_trade_result(pnl, condition_id)
-            self._total_pnl += pnl
-            logger.info(
-                f"💰 Early exit ({reason_category}): "
-                f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
+            market = market_discovery.current_market
+            signal = self._last_signal or CompositeSignal(
+                composite_score=0.0,
+                timestamp=datetime.now(timezone.utc),
             )
+
+            sell_state = None
+            if market:
+                try:
+                    sell_state = self._capture_market_state(market, signal)
+                except Exception as e:
+                    logger.debug(f"Error capturing sell state: {e}")
+
+            is_dry = config_manager.config.mode != "live"
+            pnl = await order_manager.sell_position(
+                condition_id,
+                reason=reason,
+                is_dry_run=is_dry,
+                sell_state_snapshot=sell_state,
+            )
+            if pnl is not None:
+                risk_manager.record_trade_result(pnl, condition_id)
+                self._total_pnl += pnl
+                logger.info(
+                    f"💰 Early exit ({reason_category}): "
+                    f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
+                )
 
     async def _ensure_active_market(self) -> Optional[MarketInfo]:
         """
@@ -627,18 +641,13 @@ class TradingEngine:
         """Check risk rules and place trade if appropriate."""
         config = config_manager.config
 
-        # Don't trade if we already have a position in this market
-        if order_manager.has_position(market.condition_id):
-            return
-
-        # Check risk management
+        # Check risk management (outside lock — read-only checks)
         allowed, reason = risk_manager.can_trade(signal, market.condition_id)
         if not allowed:
             logger.debug(f"Trade blocked: {reason}")
             return
 
-        # ─── NEW: Price Ceiling Check ───
-        # Prevent buying the top. Don't enter if price is > 80c.
+        # Price Ceiling Check — prevent buying the top
         max_entry = config.risk.max_entry_price
         current_price = 0.5
         if signal.recommended_side == Side.UP:
@@ -652,6 +661,9 @@ class TradingEngine:
 
         # Determine position size
         position_size = risk_manager.get_position_size()
+        if position_size <= 0:
+            logger.debug("Position size is 0, can't trade")
+            return
 
         # Determine order type
         order_type = config.trading.order_type
@@ -664,19 +676,25 @@ class TradingEngine:
         # Capture market state snapshot before placing trade
         buy_state_snapshot = self._capture_market_state(market, signal)
 
-        # Place the trade
+        # Lock to prevent race with exit loop when checking/creating position
         is_dry_run = config.mode != "live"
-        trade = await order_manager.place_order(
-            market=market,
-            side=signal.recommended_side,
-            size_usd=position_size,
-            order_type=order_type,
-            price_offset=config.trading.price_offset,
-            is_dry_run=is_dry_run,
-            signal_score=signal.composite_score,
-            buy_state_snapshot=buy_state_snapshot,
-            session_id=self._current_session_id,
-        )
+        async with self._position_lock:
+            # Don't trade if we already have a position in this market
+            if order_manager.has_position(market.condition_id):
+                return
+
+            # Place the trade
+            trade = await order_manager.place_order(
+                market=market,
+                side=signal.recommended_side,
+                size_usd=position_size,
+                order_type=order_type,
+                price_offset=config.trading.price_offset,
+                is_dry_run=is_dry_run,
+                signal_score=signal.composite_score,
+                buy_state_snapshot=buy_state_snapshot,
+                session_id=self._current_session_id,
+            )
 
         if trade:
             logger.info(
