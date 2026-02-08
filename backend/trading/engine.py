@@ -793,8 +793,8 @@ class TradingEngine:
             recent_trades = recent_trades[:20]
         else:
             # Fallback to daily stats if no active session
-            daily_stats = db.get_daily_stats()
-            recent_trades = db.get_trades(limit=20)
+            daily_stats = db.get_daily_stats(bot_id=self._bot_id)
+            recent_trades = db.get_trades(limit=20, bot_id=self._bot_id)
 
         # Determine effective status
         status = self._status

@@ -121,6 +121,7 @@ class Trade(BaseModel):
     is_dry_run: bool = True
     signal_score: float = 0.0
     notes: str = ""
+    bot_id: Optional[int] = None
 
 
 class Position(BaseModel):

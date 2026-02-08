@@ -330,13 +330,19 @@ def get_trades_with_log_data(session_id: int) -> list[tuple[Trade, Optional[str]
     return results
 
 
-def get_today_trades() -> list[Trade]:
+def get_today_trades(bot_id: Optional[int] = None) -> list[Trade]:
     today = date.today().isoformat()
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp",
-        (today,),
-    ).fetchall()
+    if bot_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE timestamp >= ? AND bot_id = ? ORDER BY timestamp",
+            (today, bot_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp",
+            (today,),
+        ).fetchall()
     conn.close()
     return [_row_to_trade(r) for r in rows]
 
@@ -345,6 +351,7 @@ def _row_to_trade(row: sqlite3.Row) -> Trade:
     return Trade(
         id=row["id"],
         session_id=row["session_id"] if "session_id" in row.keys() else None,
+        bot_id=row["bot_id"] if "bot_id" in row.keys() else None,
         timestamp=datetime.fromisoformat(row["timestamp"]),
         market_condition_id=row["market_condition_id"],
         side=Side(row["side"]),
@@ -387,34 +394,39 @@ def get_session_stats(session_id: int) -> DailyStats:
     )
 
 
-def get_daily_stats(target_date: Optional[str] = None) -> DailyStats:
+def get_daily_stats(target_date: Optional[str] = None, bot_id: Optional[int] = None) -> DailyStats:
     if target_date is None:
         target_date = date.today().isoformat()
 
-    trades = get_today_trades() if target_date == date.today().isoformat() else []
+    trades = get_today_trades(bot_id) if target_date == date.today().isoformat() else []
 
     if not trades:
         conn = get_connection()
-        row = conn.execute(
-            "SELECT * FROM daily_stats WHERE date = ?", (target_date,)
-        ).fetchone()
-        conn.close()
-        if row:
-            return DailyStats(
-                date=row["date"],
-                total_trades=row["total_trades"],
-                winning_trades=row["winning_trades"],
-                losing_trades=row["losing_trades"],
-                total_pnl=row["total_pnl"],
-                fees_paid=row["fees_paid"],
-                largest_win=row["largest_win"],
-                largest_loss=row["largest_loss"],
-                win_rate=(
-                    row["winning_trades"] / row["total_trades"]
-                    if row["total_trades"] > 0
-                    else 0.0
-                ),
-            )
+        # Note: daily_stats table doesn't currently support bot_id breakdown
+        # So we only fallback to table if bot_id is None
+        if bot_id is None:
+            row = conn.execute(
+                "SELECT * FROM daily_stats WHERE date = ?", (target_date,)
+            ).fetchone()
+            conn.close()
+            if row:
+                return DailyStats(
+                    date=row["date"],
+                    total_trades=row["total_trades"],
+                    winning_trades=row["winning_trades"],
+                    losing_trades=row["losing_trades"],
+                    total_pnl=row["total_pnl"],
+                    fees_paid=row["fees_paid"],
+                    largest_win=row["largest_win"],
+                    largest_loss=row["largest_loss"],
+                    win_rate=(
+                        row["winning_trades"] / row["total_trades"]
+                        if row["total_trades"] > 0
+                        else 0.0
+                    ),
+                )
+        else:
+            conn.close()
         return DailyStats(date=target_date)
 
     filled = [t for t in trades if t.status == OrderStatus.FILLED]

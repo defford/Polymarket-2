@@ -311,6 +311,10 @@ class OrderManager:
         # Update trade record in DB with sell state and P&L
         trades = db.get_trades_for_market(condition_id)
         for trade in trades:
+            # Filter by bot_id to prevent cross-talk in swarm mode
+            if self._bot_id is not None and trade.bot_id != self._bot_id:
+                continue
+
             if trade.status == OrderStatus.FILLED and trade.pnl is None:
                 # Load existing trade log data
                 existing_log_data = db.get_trade_log_data(trade.id)
@@ -466,6 +470,10 @@ class OrderManager:
         # Update the existing buy trade record with exit data
         trades = db.get_trades_for_market(condition_id)
         for trade in trades:
+            # Filter by bot_id to prevent cross-talk in swarm mode
+            if self._bot_id is not None and trade.bot_id != self._bot_id:
+                continue
+
             if trade.status == OrderStatus.FILLED and trade.pnl is None:
                 existing_log_data = db.get_trade_log_data(trade.id)
                 log_entry = {}
