@@ -8,6 +8,11 @@
 # ─────────────────────────────────────────────────────────────
 
 :80 {
+	# Dashboard authentication (credentials from .env)
+	basic_auth {
+		{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
+	}
+
 	# API and WebSocket → backend
 	handle /api/* {
 		reverse_proxy bot:8000

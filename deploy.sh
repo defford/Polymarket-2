@@ -85,6 +85,17 @@ else
     info ".env file exists"
 fi
 
+# Check for dashboard auth
+if grep -q '^DASHBOARD_PASSWORD_HASH=$' .env 2>/dev/null; then
+    echo ""
+    warn "DASHBOARD_PASSWORD_HASH is empty in .env!"
+    echo "   Your dashboard will NOT be protected until you set this."
+    echo "   Generate a hash with:"
+    echo "   docker run caddy:2-alpine caddy hash-password --plaintext 'YOUR_PASSWORD'"
+    echo "   Then paste the hash into .env"
+    echo ""
+fi
+
 # ── Step 4: Docker build ──────────────────────────────────────
 echo ""
 echo "── Step 4: Building Docker image (this takes 2-5 minutes)..."
@@ -104,13 +115,14 @@ echo ""
 echo "── Step 6: Waiting for bot to come up..."
 MAX_WAIT=30
 for i in $(seq 1 $MAX_WAIT); do
-    if curl -sf http://localhost/api/status > /dev/null 2>&1; then
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' polymarket-bot 2>/dev/null || echo "starting")
+    if [ "$STATUS" = "healthy" ]; then
         echo ""
-        info "API responding!"
+        info "Bot is healthy!"
         echo ""
-        echo "   Status: $(curl -s http://localhost/api/status)"
-        echo ""
-        info "Dashboard: http://$(curl -s ifconfig.me 2>/dev/null || echo '<your-ip>')"
+        DROPLET_IP=$(curl -s ifconfig.me 2>/dev/null || echo '<your-ip>')
+        info "Dashboard: http://${DROPLET_IP}"
+        echo "   (Login with the DASHBOARD_USER / password you set in .env)"
         echo ""
         echo "═══════════════════════════════════════════════════"
         echo "  Deployment complete! 🚀"
@@ -123,12 +135,12 @@ for i in $(seq 1 $MAX_WAIT); do
         echo "═══════════════════════════════════════════════════"
         exit 0
     fi
-    printf "   Waiting... (%d/%d)\r" "$i" "$MAX_WAIT"
+    printf "   Waiting... (%d/%d) [status: %s]\r" "$i" "$MAX_WAIT" "$STATUS"
     sleep 2
 done
 
 echo ""
-error "Bot didn't respond within ${MAX_WAIT}s. Checking logs..."
+error "Bot didn't become healthy within ${MAX_WAIT}s. Checking logs..."
 echo ""
 echo "── Bot container logs (last 30 lines):"
 docker compose logs --tail=30 bot
