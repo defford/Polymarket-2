@@ -2,11 +2,10 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 websockets==12.0
 python-dotenv==1.0.1
-py-clob-client==0.18.2
+py-clob-client>=0.34.0
 python-binance==1.0.19
 pandas==2.2.2
 numpy==1.26.4
-pandas-ta==0.3.14b1
 aiosqlite==0.20.0
 httpx==0.27.0
 apscheduler==3.10.4
