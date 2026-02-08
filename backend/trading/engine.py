@@ -38,7 +38,29 @@ class TradingEngine:
     The main trading engine. Runs as an async loop.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        config_mgr=None,
+        sig_engine=None,
+        risk_mgr=None,
+        order_mgr=None,
+        mkt_discovery=None,
+        mkt_stream=None,
+        pm_client=None,
+        btc_client=None,
+        bot_id=None,
+    ):
+        # Dependency injection (None = use global singletons for backward compat)
+        self._config_mgr = config_mgr
+        self._sig_engine = sig_engine
+        self._risk_mgr = risk_mgr
+        self._order_mgr = order_mgr
+        self._mkt_discovery = mkt_discovery
+        self._mkt_stream = mkt_stream
+        self._pm_client = pm_client
+        self._btc_client = btc_client
+        self._bot_id = bot_id
+
         self._status = BotStatus.STOPPED
         self._running = False
         self._strategy_task: Optional[asyncio.Task] = None
@@ -49,6 +71,39 @@ class TradingEngine:
         self._ws_broadcast_fn = None  # Set by main.py for WebSocket broadcasts
         self._current_session_id: Optional[int] = None
         self._position_lock = asyncio.Lock()  # Protects _open_positions from concurrent access
+
+    # Accessor helpers — fall back to module-level globals if no DI
+    @property
+    def _cfg(self):
+        return self._config_mgr if self._config_mgr is not None else config_manager
+
+    @property
+    def _signals(self):
+        return self._sig_engine if self._sig_engine is not None else signal_engine
+
+    @property
+    def _risk(self):
+        return self._risk_mgr if self._risk_mgr is not None else risk_manager
+
+    @property
+    def _orders(self):
+        return self._order_mgr if self._order_mgr is not None else order_manager
+
+    @property
+    def _discovery(self):
+        return self._mkt_discovery if self._mkt_discovery is not None else market_discovery
+
+    @property
+    def _stream(self):
+        return self._mkt_stream if self._mkt_stream is not None else market_stream
+
+    @property
+    def _polymarket(self):
+        return self._pm_client if self._pm_client is not None else polymarket_client
+
+    @property
+    def _binance(self):
+        return self._btc_client if self._btc_client is not None else binance_client
 
     @property
     def status(self) -> BotStatus:
@@ -68,41 +123,35 @@ class TradingEngine:
             logger.warning("Trading engine already running")
             return
 
-        config = config_manager.config
+        config = self._cfg.config
 
         # Initialize Polymarket client
         if config.mode == "live":
             try:
-                polymarket_client.init_authenticated()
+                self._polymarket.init_authenticated()
                 self._status = BotStatus.RUNNING
             except Exception as e:
                 logger.error(f"Failed to init authenticated client: {e}")
                 logger.info("Falling back to dry-run mode")
-                polymarket_client.init_read_only()
+                self._polymarket.init_read_only()
                 self._status = BotStatus.DRY_RUN
         else:
-            polymarket_client.init_read_only()
+            self._polymarket.init_read_only()
             self._status = BotStatus.DRY_RUN
 
         # Start new session
         new_session = Session(
             start_time=datetime.now(timezone.utc),
-            start_balance=db.get_state("usdc_balance", 0.0), # Assuming this is tracked or we can fetch
+            start_balance=db.get_state("usdc_balance", 0.0),
             status=self._status.value,
         )
-        try:
-            # We don't have direct access to balance here easily without a client call or state
-            # For now, start balance can be null or fetched if available
-            pass
-        except Exception:
-            pass
-            
-        self._current_session_id = db.create_session(new_session)
+
+        self._current_session_id = db.create_session(new_session, bot_id=self._bot_id)
         self._total_pnl = 0.0
-        risk_manager.reset_session_stats()
+        self._risk.reset_session_stats()
 
         # Start WebSocket stream for real-time prices
-        await market_stream.start()
+        await self._stream.start()
 
         self._running = True
         self._strategy_task = asyncio.create_task(self._slow_strategy_loop())
@@ -115,7 +164,7 @@ class TradingEngine:
         self._running = False
 
         # Stop WebSocket price stream
-        await market_stream.stop()
+        await self._stream.stop()
 
         # Cancel both loop tasks
         for task in [self._strategy_task, self._risk_task]:
@@ -127,7 +176,7 @@ class TradingEngine:
                     pass
 
         # Cancel any open orders
-        order_manager.cancel_all()
+        self._orders.cancel_all()
 
         # Close session
         if self._current_session_id:
@@ -151,7 +200,7 @@ class TradingEngine:
 
     async def _slow_strategy_loop(self):
         """Strategy & signal loop — runs every poll_interval_seconds."""
-        config = config_manager.config.trading
+        config = self._cfg.config.trading
 
         logger.info("Entering strategy loop")
 
@@ -170,9 +219,9 @@ class TradingEngine:
                 self._update_market_prices(market)
 
                 # Step 3: Check if too close to market close
-                time_remaining = market_discovery.time_until_close()
-                buffer_seconds = config_manager.config.risk.stop_trading_minutes_before_close * 60
-                if market_discovery.should_stop_trading(buffer_seconds=buffer_seconds):
+                time_remaining = self._discovery.time_until_close()
+                buffer_seconds = self._cfg.config.risk.stop_trading_minutes_before_close * 60
+                if self._discovery.should_stop_trading(buffer_seconds=buffer_seconds):
                     remaining_str = f"{time_remaining:.0f}s" if time_remaining is not None else "unknown"
                     logger.info(
                         f"⏳ Too close to market close (remaining: {remaining_str}, "
@@ -182,25 +231,29 @@ class TradingEngine:
                     continue
 
                 # Step 4: Compute signals
-                composite_signal = signal_engine.compute_signal(market)
+                composite_signal = self._signals.compute_signal(market)
                 self._last_signal = composite_signal
 
                 # Step 5: Check risk and maybe trade
                 await self._maybe_trade(market, composite_signal)
 
                 # Step 5.5: Update position prices via HTTP when WS is stale
-                if order_manager.has_position(market.condition_id):
-                    pos = order_manager._open_positions.get(market.condition_id)
-                    if pos and not market_stream.is_price_fresh(pos.token_id):
-                        order_manager.update_position_prices(market.condition_id)
+                if self._orders.has_position(market.condition_id):
+                    pos = self._orders._open_positions.get(market.condition_id)
+                    if pos and not self._stream.is_price_fresh(pos.token_id):
+                        self._orders.update_position_prices(market.condition_id)
 
                 # Step 6: Full exit evaluation (signal reversal + BTC pressure)
                 # The fast loop handles price-based stops in real-time; this
                 # catches BTC-pressure-adjusted trailing stops and signal flips.
-                if order_manager.has_position(market.condition_id):
-                    position = order_manager._open_positions.get(market.condition_id)
+                if self._orders.has_position(market.condition_id):
+                    position = self._orders._open_positions.get(market.condition_id)
                     if position:
-                        exit_decision = evaluate_exit(position, composite_signal)
+                        exit_decision = evaluate_exit(
+                            position, composite_signal,
+                            config_mgr=self._cfg, mkt_discovery=self._discovery,
+                            btc_client=self._binance,
+                        )
                         if exit_decision:
                             await self._execute_exit(
                                 market.condition_id,
@@ -236,16 +289,16 @@ class TradingEngine:
 
         while self._running:
             try:
-                exit_config = config_manager.config.exit
+                exit_config = self._cfg.config.exit
                 if not exit_config.enabled:
                     await asyncio.sleep(1.0)
                     continue
 
                 # Update dashboard market prices from WS cache
-                market = market_discovery.current_market
+                market = self._discovery.current_market
                 if market:
-                    up_mid = market_stream.prices.get_midpoint(market.up_token_id)
-                    down_mid = market_stream.prices.get_midpoint(market.down_token_id)
+                    up_mid = self._stream.prices.get_midpoint(market.up_token_id)
+                    down_mid = self._stream.prices.get_midpoint(market.down_token_id)
                     if up_mid is not None:
                         market.up_price = up_mid
                     if down_mid is not None:
@@ -253,12 +306,12 @@ class TradingEngine:
 
                 # Iterate over all open positions
                 exited = False
-                for condition_id, position in list(order_manager._open_positions.items()):
-                    ws_price = market_stream.prices.get_midpoint(position.token_id)
-                    if ws_price is None or not market_stream.is_price_fresh(position.token_id):
+                for condition_id, position in list(self._orders._open_positions.items()):
+                    ws_price = self._stream.prices.get_midpoint(position.token_id)
+                    if ws_price is None or not self._stream.is_price_fresh(position.token_id):
                         # WS stale — fall back to HTTP for safety
                         try:
-                            ws_price = polymarket_client.get_midpoint(position.token_id)
+                            ws_price = self._polymarket.get_midpoint(position.token_id)
                         except Exception:
                             continue  # Can't get price at all, skip this check
                     if ws_price is None:
@@ -277,7 +330,7 @@ class TradingEngine:
                             continue
 
                     # Determine time-based trailing stop
-                    time_remaining = market_discovery.time_until_close()
+                    time_remaining = self._discovery.time_until_close()
                     base_trailing = exit_config.trailing_stop_pct
                     time_zone = "normal"
                     if time_remaining is not None:
@@ -337,11 +390,11 @@ class TradingEngine:
         """
         async with self._position_lock:
             # Check position still exists (may have been closed by other loop)
-            if not order_manager.has_position(condition_id):
+            if not self._orders.has_position(condition_id):
                 logger.debug(f"Position {condition_id[:16]} already closed, skipping exit")
                 return
 
-            market = market_discovery.current_market
+            market = self._discovery.current_market
             signal = self._last_signal or CompositeSignal(
                 composite_score=0.0,
                 timestamp=datetime.now(timezone.utc),
@@ -354,15 +407,15 @@ class TradingEngine:
                 except Exception as e:
                     logger.debug(f"Error capturing sell state: {e}")
 
-            is_dry = config_manager.config.mode != "live"
-            pnl = await order_manager.sell_position(
+            is_dry = self._cfg.config.mode != "live"
+            pnl = await self._orders.sell_position(
                 condition_id,
                 reason=reason,
                 is_dry_run=is_dry,
                 sell_state_snapshot=sell_state,
             )
             if pnl is not None:
-                risk_manager.record_trade_result(pnl, condition_id)
+                self._risk.record_trade_result(pnl, condition_id)
                 self._total_pnl += pnl
                 logger.info(
                     f"💰 Early exit ({reason_category}): "
@@ -373,13 +426,13 @@ class TradingEngine:
         """
         Ensure we have an active market. Handles rotation and WS subscriptions.
         """
-        market = await market_discovery.scan_for_active_market()
+        market = await self._discovery.scan_for_active_market()
 
         if market and market.condition_id != self._previous_market_id:
             # Market has changed — handle rotation
             if self._previous_market_id:
                 await self._handle_market_close(self._previous_market_id)
-                risk_manager.on_market_change(market.condition_id)
+                self._risk.on_market_change(market.condition_id)
 
             self._previous_market_id = market.condition_id
             logger.info(f"📊 Active market: {market.question}")
@@ -387,7 +440,7 @@ class TradingEngine:
             # Subscribe to new market tokens via WebSocket for real-time prices
             tokens = [t for t in [market.up_token_id, market.down_token_id] if t]
             if tokens:
-                market_stream.subscribe(tokens)
+                self._stream.subscribe(tokens)
 
         return market
 
@@ -397,8 +450,8 @@ class TradingEngine:
         Updates the market object in-place for the dashboard display.
         """
         try:
-            market.up_price = polymarket_client.get_midpoint(market.up_token_id)
-            market.down_price = polymarket_client.get_midpoint(market.down_token_id)
+            market.up_price = self._polymarket.get_midpoint(market.up_token_id)
+            market.down_price = self._polymarket.get_midpoint(market.down_token_id)
         except Exception as e:
             logger.debug(f"Error updating market prices: {e}")
 
@@ -418,13 +471,13 @@ class TradingEngine:
         orderbook_down = {}
         try:
             if market.up_token_id:
-                orderbook_up = polymarket_client.get_order_book(market.up_token_id)
+                orderbook_up = self._polymarket.get_order_book(market.up_token_id)
         except Exception as e:
             logger.debug(f"Error capturing up token orderbook: {e}")
         
         try:
             if market.down_token_id:
-                orderbook_down = polymarket_client.get_order_book(market.down_token_id)
+                orderbook_down = self._polymarket.get_order_book(market.down_token_id)
         except Exception as e:
             logger.debug(f"Error capturing down token orderbook: {e}")
         
@@ -432,9 +485,9 @@ class TradingEngine:
         btc_price = None
         btc_candles_summary = {}
         try:
-            btc_price = binance_client.get_current_price()
+            btc_price = self._binance.get_current_price()
             # Get recent candle data summaries for each timeframe
-            candles = binance_client.fetch_all_timeframes()
+            candles = self._binance.fetch_all_timeframes()
             for tf, df in candles.items():
                 if df is not None and not df.empty:
                     latest = df.iloc[-1]
@@ -450,10 +503,10 @@ class TradingEngine:
             logger.debug(f"Error capturing BTC data: {e}")
         
         # Capture risk manager state
-        risk_state = risk_manager.get_state()
+        risk_state = self._risk.get_state()
         
         # Capture relevant config parameters
-        config = config_manager.config
+        config = self._cfg.config
         config_snapshot = {
             "signal": {
                 "pm_rsi_period": config.signal.pm_rsi_period,
@@ -500,12 +553,12 @@ class TradingEngine:
         # Capture market window information
         market_window_info = {}
         try:
-            time_remaining = market_discovery.time_until_close()
+            time_remaining = self._discovery.time_until_close()
             market_window_info = {
                 "time_until_close_seconds": time_remaining,
-                "should_stop_trading": market_discovery.should_stop_trading(),
-                "current_window_timestamp": market_discovery.get_current_window_timestamp(),
-                "next_window_timestamp": market_discovery.get_next_window_timestamp(),
+                "should_stop_trading": self._discovery.should_stop_trading(),
+                "current_window_timestamp": self._discovery.get_current_window_timestamp(),
+                "next_window_timestamp": self._discovery.get_next_window_timestamp(),
             }
         except Exception as e:
             logger.debug(f"Error capturing window info: {e}")
@@ -540,10 +593,10 @@ class TradingEngine:
         Handle the close of a 15-min market.
         Resolve any open position.
         """
-        if not order_manager.has_position(old_condition_id):
+        if not self._orders.has_position(old_condition_id):
             return
 
-        position = [p for p in order_manager.open_positions
+        position = [p for p in self._orders.open_positions
                      if p.market_condition_id == old_condition_id]
         if not position:
             return
@@ -552,7 +605,7 @@ class TradingEngine:
 
         # Get current market info for state capture
         # Try to get the market that's closing (may not be current anymore)
-        market = market_discovery.current_market
+        market = self._discovery.current_market
         if not market or market.condition_id != old_condition_id:
             # Market has rotated, try to get market info from trades or create minimal
             trades = db.get_trades_for_market(old_condition_id)
@@ -591,7 +644,7 @@ class TradingEngine:
         resolution = 0.5  # Default to neutral/unknown
 
         try:
-            market_data = polymarket_client.get_market(old_condition_id)
+            market_data = self._polymarket.get_market(old_condition_id)
             
             # Check if market is resolved/closed
             if market_data and (market_data.get("closed") or market_data.get("resolved")):
@@ -615,7 +668,7 @@ class TradingEngine:
             
             # If still 0.5, try the price method as backup (but carefully)
             if resolution == 0.5:
-                final_price = polymarket_client.get_midpoint(pos.token_id)
+                final_price = self._polymarket.get_midpoint(pos.token_id)
                 if final_price > 0.9:
                     resolution = 1.0
                 elif final_price < 0.1:
@@ -633,22 +686,22 @@ class TradingEngine:
         )
         sell_state_snapshot = self._capture_market_state(market, minimal_signal)
 
-        pnl = order_manager.resolve_position(
+        pnl = self._orders.resolve_position(
             old_condition_id,
             resolution,
             sell_state_snapshot=sell_state_snapshot,
         )
         if pnl is not None:
-            risk_manager.record_trade_result(pnl, old_condition_id)
+            self._risk.record_trade_result(pnl, old_condition_id)
             self._total_pnl += pnl
             logger.info(f"💰 Position resolved: P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}")
 
     async def _maybe_trade(self, market: MarketInfo, signal: CompositeSignal):
         """Check risk rules and place trade if appropriate."""
-        config = config_manager.config
+        config = self._cfg.config
 
         # Check risk management (outside lock — read-only checks)
-        allowed, reason = risk_manager.can_trade(signal, market.condition_id)
+        allowed, reason = self._risk.can_trade(signal, market.condition_id)
         if not allowed:
             logger.debug(f"Trade blocked: {reason}")
             return
@@ -666,7 +719,7 @@ class TradingEngine:
             return
 
         # Determine position size
-        position_size = risk_manager.get_position_size()
+        position_size = self._risk.get_position_size()
         if position_size <= 0:
             logger.debug("Position size is 0, can't trade")
             return
@@ -686,11 +739,11 @@ class TradingEngine:
         is_dry_run = config.mode != "live"
         async with self._position_lock:
             # Don't trade if we already have a position in this market
-            if order_manager.has_position(market.condition_id):
+            if self._orders.has_position(market.condition_id):
                 return
 
             # Place the trade
-            trade = await order_manager.place_order(
+            trade = await self._orders.place_order(
                 market=market,
                 side=signal.recommended_side,
                 size_usd=position_size,
@@ -729,7 +782,7 @@ class TradingEngine:
     ) -> BotState:
         """Get the full bot state for the dashboard."""
         if market is None:
-            market = market_discovery.current_market
+            market = self._discovery.current_market
         if signal is None:
             signal = self._last_signal
 
@@ -745,19 +798,19 @@ class TradingEngine:
 
         # Determine effective status
         status = self._status
-        if risk_manager.is_in_cooldown:
+        if self._risk.is_in_cooldown:
             status = BotStatus.COOLDOWN
 
         return BotState(
             status=status,
-            mode=config_manager.config.mode,
+            mode=self._cfg.config.mode,
             current_market=market,
             current_signal=signal,
-            open_positions=order_manager.open_positions,
+            open_positions=self._orders.open_positions,
             recent_trades=recent_trades,
             daily_stats=daily_stats,
-            consecutive_losses=risk_manager.consecutive_losses,
-            daily_pnl=risk_manager.daily_pnl,
+            consecutive_losses=self._risk.consecutive_losses,
+            daily_pnl=self._risk.daily_pnl,
             total_pnl=self._total_pnl,
             last_updated=datetime.now(timezone.utc),
         )

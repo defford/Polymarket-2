@@ -26,15 +26,30 @@ class SignalEngine:
     a composite trading signal.
     """
 
-    def __init__(self):
+    def __init__(self, config_mgr=None, binance_cli=None, polymarket_cli=None):
+        self._config_mgr = config_mgr  # None = use global
+        self._binance_cli = binance_cli
+        self._polymarket_cli = polymarket_cli
         self._last_signal: Optional[CompositeSignal] = None
+
+    @property
+    def _cfg(self):
+        return self._config_mgr if self._config_mgr is not None else config_manager
+
+    @property
+    def _pm_client(self):
+        return self._polymarket_cli if self._polymarket_cli is not None else polymarket_client
+
+    @property
+    def _btc_client(self):
+        return self._binance_cli if self._binance_cli is not None else binance_client
 
     @property
     def last_signal(self) -> Optional[CompositeSignal]:
         return self._last_signal
 
     def compute_signal(self, market: MarketInfo) -> CompositeSignal:
-        config = config_manager.config.signal
+        config = self._cfg.config.signal
 
         # --- Layer 1: Polymarket Token TA ---
         layer1 = self._compute_layer1(market, config)
@@ -73,7 +88,7 @@ class SignalEngine:
         try:
             # Use interval="max" to get full history for the active token
             # fidelity=10 implies 10-second resolution (sufficient for 15m markets)
-            price_history = polymarket_client.get_price_history(
+            price_history = self._pm_client.get_price_history(
                 token_id=market.up_token_id,
                 interval="max",
                 fidelity=10,
@@ -92,7 +107,7 @@ class SignalEngine:
     def _compute_layer2(self, config) -> Layer2Signal:
         """Fetch BTC candles and compute Layer 2."""
         try:
-            candles = binance_client.fetch_all_timeframes()
+            candles = self._btc_client.fetch_all_timeframes()
 
             if candles:
                 return compute_layer2_signal(candles, config)
@@ -175,7 +190,7 @@ class SignalEngine:
                 recommended_side = Side.DOWN
 
             # Confidence gate
-            min_conf = config_manager.config.risk.min_signal_confidence
+            min_conf = self._cfg.config.risk.min_signal_confidence
             if composite_confidence >= min_conf:
                 should_trade = True
 

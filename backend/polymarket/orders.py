@@ -19,9 +19,15 @@ logger = logging.getLogger(__name__)
 class OrderManager:
     """Manages order placement, position tracking, and P&L."""
 
-    def __init__(self):
+    def __init__(self, polymarket_cli=None, bot_id: Optional[int] = None):
+        self._polymarket_cli = polymarket_cli  # None = use global
+        self._bot_id = bot_id
         self._open_positions: dict[str, Position] = {}  # condition_id -> Position
         self._pending_orders: dict[str, Trade] = {}  # order_id -> Trade
+
+    @property
+    def _pm_client(self):
+        return self._polymarket_cli if self._polymarket_cli is not None else polymarket_client
 
     @property
     def open_positions(self) -> list[Position]:
@@ -62,7 +68,7 @@ class OrderManager:
 
         # Get current price
         try:
-            best_price = polymarket_client.get_price(token_id, side="BUY")
+            best_price = self._pm_client.get_price(token_id, side="BUY")
         except Exception:
             best_price = 0.5
 
@@ -139,19 +145,19 @@ class OrderManager:
                 is_dry_run=True,
             )
 
-            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
             return trade
 
         # --- Live order placement ---
         try:
             if order_type == "market":
-                resp = polymarket_client.place_market_order(
+                resp = self._pm_client.place_market_order(
                     token_id=token_id,
                     amount=size_usd,
                     side="BUY",
                 )
             else:
-                resp = polymarket_client.place_limit_order(
+                resp = self._pm_client.place_limit_order(
                     token_id=token_id,
                     price=price,
                     size=size_tokens,
@@ -171,7 +177,7 @@ class OrderManager:
 
                     for i in range(max_retries):
                         await asyncio.sleep(1.0)
-                        order_check = polymarket_client.get_order(trade.order_id)
+                        order_check = self._pm_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
 
                         if order_status == "FILLED":
@@ -186,7 +192,7 @@ class OrderManager:
                             logger.warning(f"❌ Order {trade.order_id} was {order_status}. Not counting as trade.")
                             trade.status = OrderStatus.REJECTED
                             trade.notes = f"REJECTED: Order status {order_status}"
-                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
                             return None
 
                         # If OPEN, we wait and retry.
@@ -195,19 +201,19 @@ class OrderManager:
                         logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling...")
 
                         # Attempt to cancel
-                        cancel_resp = polymarket_client.cancel_order(trade.order_id)
+                        cancel_resp = self._pm_client.cancel_order(trade.order_id)
 
                         if cancel_resp and cancel_resp.get("success"):
                             trade.status = OrderStatus.CANCELLED
                             trade.notes = f"CANCELLED: Timed out waiting for fill"
-                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
                             logger.info(f"🚫 Cancelled order {trade.order_id} successfully.")
                             return None
                         else:
                             # Cancellation failed — check if it filled in the meantime
                             logger.warning(f"⚠️ Cancel failed for {trade.order_id} (msg={cancel_resp}). Checking if it filled...")
                             await asyncio.sleep(0.5)
-                            final_check = polymarket_client.get_order(trade.order_id)
+                            final_check = self._pm_client.get_order(trade.order_id)
                             final_status = final_check.get("status") if final_check else "UNKNOWN"
 
                             if final_status == "FILLED":
@@ -220,13 +226,13 @@ class OrderManager:
                             elif final_status == "CANCELED":
                                 trade.status = OrderStatus.CANCELLED
                                 trade.notes = f"CANCELLED: Timed out waiting for fill"
-                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
                                 return None
                             else:
                                 logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED.")
                                 trade.status = OrderStatus.CANCELLED
                                 trade.notes = f"AMBIGUOUS: Cancel failed but status is {final_status}"
-                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
                                 return None
 
                     # If we get here, it is FILLED
@@ -260,14 +266,14 @@ class OrderManager:
                 trade.notes = f"REJECTED: {error}"
                 logger.warning(f"❌ Order rejected: {error}")
 
-            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
             return trade
 
         except Exception as e:
             trade.status = OrderStatus.REJECTED
             trade.notes = f"ERROR: {str(e)}"
             logger.error(f"❌ Order error: {e}")
-            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
             return trade
 
     def resolve_position(
@@ -380,7 +386,7 @@ class OrderManager:
 
         # Get current sell price
         try:
-            sell_price = polymarket_client.get_price(position.token_id, side="SELL")
+            sell_price = self._pm_client.get_price(position.token_id, side="SELL")
         except Exception:
             sell_price = position.current_price
 
@@ -408,7 +414,7 @@ class OrderManager:
         else:
             # Live sell
             try:
-                resp = polymarket_client.place_market_order(
+                resp = self._pm_client.place_market_order(
                     token_id=position.token_id,
                     amount=position.size,
                     side="SELL",
@@ -423,7 +429,7 @@ class OrderManager:
                 # UPDATE WITH ACTUAL FILL PRICE
                 try:
                     await asyncio.sleep(1.0)  # Wait for fill
-                    order_details = polymarket_client.get_order(order_id)
+                    order_details = self._pm_client.get_order(order_id)
                     actual_price = None
                     
                     # Try to find average fill price in order details
@@ -524,7 +530,7 @@ class OrderManager:
             return
 
         try:
-            current_price = polymarket_client.get_midpoint(position.token_id)
+            current_price = self._pm_client.get_midpoint(position.token_id)
             position.current_price = current_price
             position.unrealized_pnl = (current_price - position.entry_price) * position.size
 
@@ -536,9 +542,9 @@ class OrderManager:
 
     def cancel_all(self):
         """Cancel all open orders (live mode only)."""
-        if polymarket_client.is_authenticated:
+        if self._pm_client.is_authenticated:
             try:
-                polymarket_client.cancel_all_orders()
+                self._pm_client.cancel_all_orders()
                 logger.info("All open orders cancelled")
             except Exception as e:
                 logger.error(f"Error cancelling orders: {e}")

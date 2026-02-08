@@ -42,7 +42,7 @@ function formatPnl(value) {
   return `${sign}$${num.toFixed(2)}`
 }
 
-export default function SessionsPanel() {
+export default function SessionsPanel({ botId }) {
   const { get } = useApi()
   const [sessions, setSessions] = useState([])
   const [selectedSessionId, setSelectedSessionId] = useState(null)
@@ -50,6 +50,10 @@ export default function SessionsPanel() {
   const [loading, setLoading] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState(null)
   const [copyState, setCopyState] = useState('idle') // 'idle' | 'loading' | 'copied'
+
+  const sessionsUrl = botId ? `/api/swarm/${botId}/sessions` : '/api/sessions'
+  const sessionDetailUrl = (sid) =>
+    botId ? `/api/swarm/${botId}/sessions/${sid}` : `/api/sessions/${sid}`
 
   const handleCopyForAI = async (sessionId) => {
     setCopyState('loading')
@@ -70,16 +74,16 @@ export default function SessionsPanel() {
 
   // Fetch list of sessions
   useEffect(() => {
-    get('/api/sessions').then(data => {
+    get(sessionsUrl).then(data => {
       if (data) setSessions(data)
     })
-  }, [get])
+  }, [get, sessionsUrl])
 
   // Fetch details when a session is selected
   useEffect(() => {
     if (selectedSessionId) {
       setLoading(true)
-      get(`/api/sessions/${selectedSessionId}`).then(data => {
+      get(sessionDetailUrl(selectedSessionId)).then(data => {
         setSessionDetails(data)
         setLoading(false)
       })

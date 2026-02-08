@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useApi } from './hooks/useApi'
 import StatusBar from './components/StatusBar'
+import SwarmView from './components/SwarmView'
+import BotDetailView from './components/BotDetailView'
 import StatsCards from './components/StatsCards'
 import SignalPanel from './components/SignalPanel'
 import MarketPanel from './components/MarketPanel'
@@ -12,12 +14,13 @@ import SessionsPanel from './components/SessionsPanel'
 import PnlChart from './components/PnlChart'
 
 export default function App() {
-  const { state: wsState, connected } = useWebSocket()
+  const { swarmState, connected } = useWebSocket()
   const { get, post, put } = useApi()
   const [config, setConfig] = useState(null)
-  const [activeTab, setActiveTab] = useState('dashboard')
+  const [activeTab, setActiveTab] = useState('swarm')
+  const [selectedBotId, setSelectedBotId] = useState(null)
 
-  // Fetch initial config
+  // Fetch initial config (for legacy single-bot view)
   useEffect(() => {
     get('/api/config').then((data) => {
       if (data) setConfig(data)
@@ -37,14 +40,28 @@ export default function App() {
     if (data) setConfig(data)
   }, [put])
 
-  const state = wsState || {}
+  // Get default bot state for the legacy status bar
+  const defaultBotState = swarmState['1'] || Object.values(swarmState)[0] || {}
+
+  // If a bot is selected, show the BotDetailView fullscreen
+  if (selectedBotId !== null) {
+    return (
+      <div className="min-h-screen bg-surface-0 flex flex-col">
+        <BotDetailView
+          botId={selectedBotId}
+          botState={swarmState[String(selectedBotId)]}
+          onBack={() => setSelectedBotId(null)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-surface-0 flex flex-col">
       {/* Top Status Bar */}
       <StatusBar
-        status={state.status}
-        mode={state.mode}
+        status={defaultBotState.status}
+        mode={defaultBotState.mode}
         connected={connected}
         onStart={handleStart}
         onStop={handleStop}
@@ -53,7 +70,7 @@ export default function App() {
       {/* Tab Navigation */}
       <nav className="border-b border-surface-3 bg-surface-1/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-[1600px] mx-auto px-4 flex gap-0">
-          {['dashboard', 'history', 'config'].map((tab) => (
+          {['swarm', 'dashboard', 'history', 'config'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -74,8 +91,13 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 max-w-[1600px] mx-auto w-full p-4">
-        {activeTab === 'dashboard' ? (
-          <DashboardView state={state} />
+        {activeTab === 'swarm' ? (
+          <SwarmView
+            swarmState={swarmState}
+            onSelectBot={setSelectedBotId}
+          />
+        ) : activeTab === 'dashboard' ? (
+          <DashboardView state={defaultBotState} />
         ) : activeTab === 'history' ? (
           <SessionsPanel />
         ) : (
