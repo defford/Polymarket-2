@@ -3,6 +3,7 @@ Order management for Polymarket.
 Handles order placement with fee awareness, dry-run mode, and position tracking.
 """
 
+import asyncio
 import logging
 import json
 from datetime import datetime, timezone
@@ -29,7 +30,7 @@ class OrderManager:
     def has_position(self, condition_id: str) -> bool:
         return condition_id in self._open_positions
 
-    def place_order(
+    async def place_order(
         self,
         market: MarketInfo,
         side: Side,
@@ -164,16 +165,15 @@ class OrderManager:
                 # VERIFY ORDER STATUS (Fix for Ghost Trades)
                 # Ensure the order wasn't rejected or immediately cancelled
                 try:
-                    import time
-                    # Poll for fill for up to 5 seconds
+                    # Poll for fill for up to 5 seconds (non-blocking)
                     max_retries = 5
                     filled = False
-                    
+
                     for i in range(max_retries):
-                        time.sleep(1.0)
+                        await asyncio.sleep(1.0)
                         order_check = polymarket_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
-                        
+
                         if order_status == "FILLED":
                             filled = True
                             # Try to get avg fill price
@@ -188,18 +188,15 @@ class OrderManager:
                             trade.notes = f"REJECTED: Order status {order_status}"
                             trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
                             return None
-                        
+
                         # If OPEN, we wait and retry.
-                        # If we reach the end of retries and it's still OPEN, we cancel it.
-                    
+
                     if not filled:
                         logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling...")
-                        
+
                         # Attempt to cancel
                         cancel_resp = polymarket_client.cancel_order(trade.order_id)
-                        
-                        # Verify cancellation success or check if it filled in the meantime
-                        # A failed cancellation often means it ALREADY filled.
+
                         if cancel_resp and cancel_resp.get("success"):
                             trade.status = OrderStatus.CANCELLED
                             trade.notes = f"CANCELLED: Timed out waiting for fill"
@@ -207,43 +204,40 @@ class OrderManager:
                             logger.info(f"🚫 Cancelled order {trade.order_id} successfully.")
                             return None
                         else:
-                            # Cancellation failed or returned error. Check status one last time.
+                            # Cancellation failed — check if it filled in the meantime
                             logger.warning(f"⚠️ Cancel failed for {trade.order_id} (msg={cancel_resp}). Checking if it filled...")
-                            time.sleep(0.5)
+                            await asyncio.sleep(0.5)
                             final_check = polymarket_client.get_order(trade.order_id)
                             final_status = final_check.get("status") if final_check else "UNKNOWN"
-                            
-                            if final_status == "FILLED" or final_status == "CANCELED": # CANCELED means we succeeded but api returned weird resp?
-                                if final_status == "FILLED":
-                                    logger.info(f"✅ Order {trade.order_id} actually FILLED! Recovering trade.")
-                                    filled = True
-                                    if "avgPrice" in final_check:
-                                        price = float(final_check["avgPrice"])
-                                    elif "matchedAvgPrice" in final_check:
-                                        price = float(final_check["matchedAvgPrice"])
-                                else:
-                                    # It is indeed cancelled
-                                    trade.status = OrderStatus.CANCELLED
-                                    trade.notes = f"CANCELLED: Timed out waiting for fill"
-                                    trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
-                                    return None
+
+                            if final_status == "FILLED":
+                                logger.info(f"✅ Order {trade.order_id} actually FILLED! Recovering trade.")
+                                filled = True
+                                if "avgPrice" in final_check:
+                                    price = float(final_check["avgPrice"])
+                                elif "matchedAvgPrice" in final_check:
+                                    price = float(final_check["matchedAvgPrice"])
+                            elif final_status == "CANCELED":
+                                trade.status = OrderStatus.CANCELLED
+                                trade.notes = f"CANCELLED: Timed out waiting for fill"
+                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                                return None
                             else:
-                                # Still OPEN or UNKNOWN? We can't track it safely.
-                                logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED to be safe.")
+                                logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED.")
                                 trade.status = OrderStatus.CANCELLED
                                 trade.notes = f"AMBIGUOUS: Cancel failed but status is {final_status}"
                                 trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
                                 return None
 
-                    # If we get here, it is FILLED (either in loop or recovered after cancel fail)
+                    # If we get here, it is FILLED
                     trade.status = OrderStatus.FILLED
-                
+
                 except Exception as e:
                     logger.warning(f"Could not verify order {trade.order_id}: {e}")
-                    # In case of API error, we err on side of caution and DO NOT assume fill
-                    # But we should probably check if we can verify via trades list
-                    logger.warning("⚠️ Assuming order FAILED verification due to API error")
-                    return None
+                    # Assume FILLED to prevent orphaned positions — market close will reconcile
+                    trade.status = OrderStatus.FILLED
+                    trade.notes = f"UNVERIFIED: API error during verification ({e})"
+                    logger.warning("⚠️ Assuming FILLED to prevent orphaned positions")
 
                 trade.notes = f"LIVE: {order_type} {side.value} {size_tokens:.2f} @ {price}"
                 logger.info(f"✅ LIVE ORDER: {trade.notes} (id={trade.order_id})")
@@ -357,7 +351,7 @@ class OrderManager:
         del self._open_positions[condition_id]
         return pnl
 
-    def sell_position(
+    async def sell_position(
         self,
         condition_id: str,
         reason: str = "stop_loss",
@@ -428,8 +422,7 @@ class OrderManager:
                 
                 # UPDATE WITH ACTUAL FILL PRICE
                 try:
-                    import time
-                    time.sleep(1.0)  # Wait for fill
+                    await asyncio.sleep(1.0)  # Wait for fill
                     order_details = polymarket_client.get_order(order_id)
                     actual_price = None
                     

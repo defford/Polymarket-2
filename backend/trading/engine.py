@@ -335,7 +335,7 @@ class TradingEngine:
                 logger.debug(f"Error capturing sell state: {e}")
 
         is_dry = config_manager.config.mode != "live"
-        pnl = order_manager.sell_position(
+        pnl = await order_manager.sell_position(
             condition_id,
             reason=reason,
             is_dry_run=is_dry,
@@ -666,7 +666,7 @@ class TradingEngine:
 
         # Place the trade
         is_dry_run = config.mode != "live"
-        trade = order_manager.place_order(
+        trade = await order_manager.place_order(
             market=market,
             side=signal.recommended_side,
             size_usd=position_size,
