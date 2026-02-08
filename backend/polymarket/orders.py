@@ -193,14 +193,49 @@ class OrderManager:
                         # If we reach the end of retries and it's still OPEN, we cancel it.
                     
                     if not filled:
-                        logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling to prevent phantom position.")
-                        polymarket_client.cancel_order(trade.order_id)
-                        trade.status = OrderStatus.CANCELLED
-                        trade.notes = f"CANCELLED: Timed out waiting for fill"
-                        trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
-                        return None
+                        logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling...")
                         
-                    # If we get here, it is FILLED
+                        # Attempt to cancel
+                        cancel_resp = polymarket_client.cancel_order(trade.order_id)
+                        
+                        # Verify cancellation success or check if it filled in the meantime
+                        # A failed cancellation often means it ALREADY filled.
+                        if cancel_resp and cancel_resp.get("success"):
+                            trade.status = OrderStatus.CANCELLED
+                            trade.notes = f"CANCELLED: Timed out waiting for fill"
+                            trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                            logger.info(f"🚫 Cancelled order {trade.order_id} successfully.")
+                            return None
+                        else:
+                            # Cancellation failed or returned error. Check status one last time.
+                            logger.warning(f"⚠️ Cancel failed for {trade.order_id} (msg={cancel_resp}). Checking if it filled...")
+                            time.sleep(0.5)
+                            final_check = polymarket_client.get_order(trade.order_id)
+                            final_status = final_check.get("status") if final_check else "UNKNOWN"
+                            
+                            if final_status == "FILLED" or final_status == "CANCELED": # CANCELED means we succeeded but api returned weird resp?
+                                if final_status == "FILLED":
+                                    logger.info(f"✅ Order {trade.order_id} actually FILLED! Recovering trade.")
+                                    filled = True
+                                    if "avgPrice" in final_check:
+                                        price = float(final_check["avgPrice"])
+                                    elif "matchedAvgPrice" in final_check:
+                                        price = float(final_check["matchedAvgPrice"])
+                                else:
+                                    # It is indeed cancelled
+                                    trade.status = OrderStatus.CANCELLED
+                                    trade.notes = f"CANCELLED: Timed out waiting for fill"
+                                    trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                                    return None
+                            else:
+                                # Still OPEN or UNKNOWN? We can't track it safely.
+                                logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED to be safe.")
+                                trade.status = OrderStatus.CANCELLED
+                                trade.notes = f"AMBIGUOUS: Cancel failed but status is {final_status}"
+                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data)
+                                return None
+
+                    # If we get here, it is FILLED (either in loop or recovered after cancel fail)
                     trade.status = OrderStatus.FILLED
                 
                 except Exception as e:
