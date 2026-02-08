@@ -104,7 +104,7 @@ class MarketDataStream:
     WS_MARKET_URL = f"{POLYMARKET_WS_HOST}/ws/market"
     RECONNECT_DELAY_BASE = 1.0
     RECONNECT_DELAY_MAX = 30.0
-    STALE_THRESHOLD_SECONDS = 15.0
+    STALE_THRESHOLD_SECONDS = 10.0
 
     def __init__(self):
         self.prices = PriceCache()

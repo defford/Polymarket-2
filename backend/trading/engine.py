@@ -256,6 +256,12 @@ class TradingEngine:
                 for condition_id, position in list(order_manager._open_positions.items()):
                     ws_price = market_stream.prices.get_midpoint(position.token_id)
                     if ws_price is None or not market_stream.is_price_fresh(position.token_id):
+                        # WS stale — fall back to HTTP for safety
+                        try:
+                            ws_price = polymarket_client.get_midpoint(position.token_id)
+                        except Exception:
+                            continue  # Can't get price at all, skip this check
+                    if ws_price is None:
                         continue
 
                     # Update position with real-time WS price
