@@ -185,25 +185,30 @@ async def export_swarm_latest_sessions():
         bot_id = bot["id"]
         bot_name = bot["name"]
 
-        sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
-
         export_parts.append(f"Bot #{bot_id}: {bot_name}")
         export_parts.append("-" * 40)
 
-        if not sessions:
-            export_parts.append("No sessions found.")
-            export_parts.append("")
-            export_parts.append("=" * 60)
-            export_parts.append("")
-            continue
+        try:
+            sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
 
-        session = sessions[0]
-        stats = db.get_session_stats(session.id)
-        trades_with_logs = db.get_trades_with_log_data(session.id)
-        analytics = _calculate_session_analytics(stats, trades_with_logs)
-        session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+            if not sessions:
+                export_parts.append("No sessions found.")
+                export_parts.append("")
+                export_parts.append("=" * 60)
+                export_parts.append("")
+                continue
 
-        export_parts.append(session_text)
+            session = sessions[0]
+            stats = db.get_session_stats(session.id)
+            trades_with_logs = db.get_trades_with_log_data(session.id)
+            analytics = _calculate_session_analytics(stats, trades_with_logs)
+            session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+            export_parts.append(session_text)
+        except Exception as e:
+            logger.error(f"Error exporting bot #{bot_id} ({bot_name}): {e}", exc_info=True)
+            export_parts.append(f"Error exporting session: {e}")
+
         export_parts.append("")
         export_parts.append("=" * 60)
         export_parts.append("")
@@ -633,10 +638,12 @@ def _calculate_session_analytics(stats, trades_with_logs):
     wins = [(t, ld) for t, ld in filled if (t.pnl or 0) > 0]
     losses = [(t, ld) for t, ld in filled if (t.pnl or 0) < 0]
 
-    avg_win = sum(t.pnl for t, _ in wins) / len(wins) if wins else 0.0
-    avg_loss = sum(t.pnl for t, _ in losses) / len(losses) if losses else 0.0
-    profit_factor = abs(sum(t.pnl for t, _ in wins) / sum(t.pnl for t, _ in losses)) if losses and sum(t.pnl for t, _ in losses) != 0 else float("inf")
-    total_fees = sum(t.fees for t, _ in filled)
+    avg_win = sum((t.pnl or 0) for t, _ in wins) / len(wins) if wins else 0.0
+    avg_loss = sum((t.pnl or 0) for t, _ in losses) / len(losses) if losses else 0.0
+    total_wins = sum((t.pnl or 0) for t, _ in wins)
+    total_losses = sum((t.pnl or 0) for t, _ in losses)
+    profit_factor = abs(total_wins / total_losses) if total_losses != 0 else float("inf")
+    total_fees = sum((t.fees or 0) for t, _ in filled)
 
     # Count exit reasons
     exit_reasons = {}
@@ -737,8 +744,8 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
         lines.append(f"- Entry Price: ¢{trade.price * 100:.1f}")
         lines.append(f"- Size: {trade.size:.2f} tokens")
         lines.append(f"- Cost: ${trade.cost:.2f}")
-        lines.append(f"- Fees: ${trade.fees:.2f}")
-        lines.append(f"- Signal Score: {trade.signal_score:+.3f}")
+        lines.append(f"- Fees: ${(trade.fees or 0):.2f}")
+        lines.append(f"- Signal Score: {(trade.signal_score or 0):+.3f}")
         lines.append(f"- Dry Run: {'yes' if trade.is_dry_run else 'no'}")
 
         if log_data_str:
