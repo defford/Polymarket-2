@@ -322,6 +322,8 @@ class TradingEngine:
                     position.unrealized_pnl = (ws_price - position.entry_price) * position.size
                     if ws_price > position.peak_price:
                         position.peak_price = ws_price
+                    if ws_price < position.trough_price or position.trough_price == 0:
+                        position.trough_price = ws_price
 
                     # Check minimum hold time
                     if position.entry_time:
@@ -454,6 +456,28 @@ class TradingEngine:
             market.down_price = self._polymarket.get_midpoint(market.down_token_id)
         except Exception as e:
             logger.debug(f"Error updating market prices: {e}")
+
+    @staticmethod
+    def compute_orderbook_imbalance(orderbook: dict) -> dict:
+        """Compute bid/ask volume imbalance and spread from an order book."""
+        bids = orderbook.get("bids", [])
+        asks = orderbook.get("asks", [])
+
+        bid_vol = sum(float(b.get("size", 0)) for b in bids[:5])
+        ask_vol = sum(float(a.get("size", 0)) for a in asks[:5])
+        total = bid_vol + ask_vol
+
+        best_bid = float(bids[0]["price"]) if bids else 0
+        best_ask = float(asks[0]["price"]) if asks else 0
+
+        return {
+            "bid_volume_top5": round(bid_vol, 2),
+            "ask_volume_top5": round(ask_vol, 2),
+            "imbalance": round((bid_vol - ask_vol) / total, 4) if total > 0 else 0,
+            "spread": round(best_ask - best_bid, 4) if best_bid and best_ask else 0,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+        }
 
     def _capture_market_state(
         self,

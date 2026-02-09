@@ -25,6 +25,12 @@
 		reverse_proxy bot:8000
 	}
 
+	# Ensure service worker is never cached by the browser
+	handle /sw.js {
+		header Cache-Control "no-cache, no-store, must-revalidate"
+		reverse_proxy bot:8000
+	}
+
 	# Everything else → React SPA (served by FastAPI)
 	handle {
 		reverse_proxy bot:8000

@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Copy, Check } from 'lucide-react'
+import { Plus, Copy, Check, Brain } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import SwarmSummary from './SwarmSummary'
 import BotCard from './BotCard'
 import AddBotModal from './AddBotModal'
+import AnalysisPanel from './AnalysisPanel'
 
 export default function SwarmView({ swarmState, onSelectBot }) {
   const { get } = useApi()
   const [bots, setBots] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showAnalysis, setShowAnalysis] = useState(false)
   const [copyStatus, setCopyStatus] = useState('idle') // idle, loading, success, error
 
   const fetchBots = useCallback(() => {
@@ -64,7 +66,14 @@ export default function SwarmView({ swarmState, onSelectBot }) {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      <div className="flex justify-end mb-2">
+      <div className="flex justify-end gap-2 mb-2">
+        <button
+          onClick={() => setShowAnalysis(true)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono font-bold transition-all bg-surface-3 hover:bg-surface-4 text-text-secondary border border-transparent hover:border-accent-cyan/30 cursor-pointer"
+        >
+          <Brain className="w-3.5 h-3.5" />
+          Analyze & Create Bot
+        </button>
         <button
           onClick={handleCopyForAI}
           disabled={copyStatus === 'loading'}
@@ -127,6 +136,14 @@ export default function SwarmView({ swarmState, onSelectBot }) {
         <AddBotModal
           bots={bots}
           onClose={() => setShowAddModal(false)}
+          onCreated={() => fetchBots()}
+        />
+      )}
+
+      {showAnalysis && (
+        <AnalysisPanel
+          bots={bots}
+          onClose={() => setShowAnalysis(false)}
           onCreated={() => fetchBots()}
         />
       )}

@@ -128,7 +128,7 @@ fi
 echo ""
 echo "── Step 4: Building Docker image (this takes 2-5 minutes)..."
 echo "   Using swap to prevent OOM during npm/pip install..."
-docker compose build --progress=plain 2>&1 | tail -20
+docker compose build --build-arg FRONTEND_VERSION="$(date +%s)" --progress=plain 2>&1 | tail -20
 info "Docker build complete"
 
 # ── Step 5: Launch services ───────────────────────────────────

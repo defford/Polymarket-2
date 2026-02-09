@@ -24,6 +24,7 @@ POLYMARKET_WS_HOST = os.getenv("POLYMARKET_WS_HOST", "wss://ws-subscriptions-clo
 CHAIN_ID = int(os.getenv("CHAIN_ID", "137"))
 BINANCE_SYMBOL = os.getenv("BINANCE_SYMBOL", "BTCUSDT")
 BOT_MODE = os.getenv("BOT_MODE", "dry_run")  # "dry_run" or "live"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 

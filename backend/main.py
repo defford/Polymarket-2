@@ -169,46 +169,56 @@ async def get_swarm_summary(time_scale: str = "all"):
 @app.get("/api/swarm/export-latest-sessions")
 async def export_swarm_latest_sessions():
     """Export the latest session for every bot, formatted for AI consumption."""
-    bots = swarm_manager.list_bots()
-    export_parts = []
+    try:
+        bots = swarm_manager.list_bots()
+        export_parts = []
 
-    bots.sort(key=lambda x: x["id"])
+        bots.sort(key=lambda x: x["id"])
 
-    now = datetime.now(timezone.utc).isoformat()
-    export_parts.append("# Swarm Latest Sessions Export")
-    export_parts.append(f"Generated: {now}")
-    export_parts.append(f"Total Bots: {len(bots)}")
-    export_parts.append("=" * 60)
-    export_parts.append("")
-
-    for bot in bots:
-        bot_id = bot["id"]
-        bot_name = bot["name"]
-
-        sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
-
-        export_parts.append(f"Bot #{bot_id}: {bot_name}")
-        export_parts.append("-" * 40)
-
-        if not sessions:
-            export_parts.append("No sessions found.")
-            export_parts.append("")
-            export_parts.append("=" * 60)
-            export_parts.append("")
-            continue
-
-        session = sessions[0]
-        stats = db.get_session_stats(session.id)
-        trades_with_logs = db.get_trades_with_log_data(session.id)
-        analytics = _calculate_session_analytics(stats, trades_with_logs)
-        session_text = _format_session_export(session, stats, analytics, trades_with_logs)
-
-        export_parts.append(session_text)
-        export_parts.append("")
+        now = datetime.now(timezone.utc).isoformat()
+        export_parts.append("# Swarm Latest Sessions Export")
+        export_parts.append(f"Generated: {now}")
+        export_parts.append(f"Total Bots: {len(bots)}")
         export_parts.append("=" * 60)
         export_parts.append("")
 
-    return {"export_text": "\n".join(export_parts)}
+        for bot in bots:
+            bot_id = bot["id"]
+            bot_name = bot["name"]
+
+            export_parts.append(f"Bot #{bot_id}: {bot_name}")
+            export_parts.append("-" * 40)
+
+            try:
+                sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
+
+                if not sessions:
+                    export_parts.append("No sessions found.")
+                    export_parts.append("")
+                    export_parts.append("=" * 60)
+                    export_parts.append("")
+                    continue
+
+                session = sessions[0]
+                stats = db.get_session_stats(session.id)
+                trades_with_logs = db.get_trades_with_log_data(session.id)
+                analytics = _calculate_session_analytics(stats, trades_with_logs)
+                session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+                export_parts.append(session_text)
+            except Exception as e:
+                logger.error(f"Error exporting bot #{bot_id} ({bot_name}): {e}", exc_info=True)
+                export_parts.append(f"Error exporting session: {e}")
+
+            export_parts.append("")
+            export_parts.append("=" * 60)
+            export_parts.append("")
+
+        return {"export_text": "\n".join(export_parts)}
+
+    except Exception as e:
+        logger.error(f"Critical error in export-latest-sessions: {e}", exc_info=True)
+        return {"export_text": f"Critical Error: {str(e)}"}
 
 
 @app.put("/api/swarm/{bot_id}")
@@ -358,6 +368,127 @@ async def get_bot_status(bot_id: int):
         "is_running": instance.is_running,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ============================================================
+#  ANALYSIS ENDPOINTS — trade analysis → config generation → bot creation
+# ============================================================
+
+@app.post("/api/analysis/run")
+async def run_analysis(
+    bot_ids: Optional[list[int]] = None,
+    since: Optional[str] = None,
+):
+    """Run full trade analysis across all bots/sessions."""
+    from analysis.engine import AnalysisEngine
+
+    engine = AnalysisEngine()
+    result = engine.run_analysis(bot_ids=bot_ids, since=since)
+
+    # Persist
+    analysis_id = db.save_analysis_run(
+        analysis_json=json.dumps(result, default=str),
+        trade_count=result.get("trade_count", 0),
+        session_count=result.get("session_count", 0),
+    )
+
+    return {
+        "analysis_id": analysis_id,
+        "summary": result.get("summary", {}),
+        "trade_count": result.get("trade_count", 0),
+        "session_count": result.get("session_count", 0),
+        "warning": result.get("warning"),
+        "message": f"Analysis complete: {result.get('trade_count', 0)} trades across {result.get('session_count', 0)} sessions",
+    }
+
+
+@app.get("/api/analysis/latest")
+async def get_latest_analysis():
+    """Get the most recent analysis result."""
+    result = db.get_latest_analysis_run()
+    if not result:
+        raise HTTPException(status_code=404, detail="No analysis runs found. Run POST /api/analysis/run first.")
+    return result
+
+
+@app.post("/api/analysis/generate-config")
+async def generate_config(
+    analysis_id: Optional[int] = None,
+    optimization_goal: str = "balanced",
+    base_config_from_bot: Optional[int] = None,
+):
+    """Generate an optimized bot config from trade analysis using AI."""
+    from config import BotConfig, ANTHROPIC_API_KEY
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="ANTHROPIC_API_KEY not configured. Add it to your .env file.",
+        )
+
+    # Load analysis
+    if analysis_id:
+        run = db.get_analysis_run(analysis_id)
+    else:
+        run = db.get_latest_analysis_run()
+    if not run:
+        raise HTTPException(status_code=404, detail="No analysis found. Run POST /api/analysis/run first.")
+
+    analysis = run["analysis"]
+    if analysis.get("trade_count", 0) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough trade data ({analysis.get('trade_count', 0)} trades). Need at least 10 filled trades.",
+        )
+
+    # Load base config
+    base_config = None
+    if base_config_from_bot:
+        instance = swarm_manager.get_bot(base_config_from_bot)
+        if instance:
+            base_config = instance.get_config()
+    if not base_config:
+        base_config = BotConfig()
+
+    # Generate
+    from analysis.config_builder import ConfigBuilder
+    try:
+        builder = ConfigBuilder()
+        recommendation = builder.generate_config(
+            analysis=analysis,
+            goal=optimization_goal,
+            base_config=base_config,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {"recommendation": recommendation}
+
+
+@app.post("/api/analysis/create-bot")
+async def create_bot_from_analysis(
+    config: dict = None,
+    name: str = "Optimized Bot",
+    description: str = "",
+):
+    """Create a new bot from an AI-generated config recommendation."""
+    from config import BotConfig
+
+    if not config:
+        raise HTTPException(status_code=400, detail="config is required")
+
+    try:
+        bot_config = BotConfig.from_dict(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
+
+    bot_id = await swarm_manager.create_bot(
+        name=name,
+        description=description,
+        config=bot_config,
+    )
+
+    return {"bot_id": bot_id, "message": f"Bot '{name}' created from analysis"}
 
 
 # ============================================================
@@ -512,10 +643,12 @@ def _calculate_session_analytics(stats, trades_with_logs):
     wins = [(t, ld) for t, ld in filled if (t.pnl or 0) > 0]
     losses = [(t, ld) for t, ld in filled if (t.pnl or 0) < 0]
 
-    avg_win = sum(t.pnl for t, _ in wins) / len(wins) if wins else 0.0
-    avg_loss = sum(t.pnl for t, _ in losses) / len(losses) if losses else 0.0
-    profit_factor = abs(sum(t.pnl for t, _ in wins) / sum(t.pnl for t, _ in losses)) if losses and sum(t.pnl for t, _ in losses) != 0 else float("inf")
-    total_fees = sum(t.fees for t, _ in filled)
+    avg_win = sum((t.pnl or 0) for t, _ in wins) / len(wins) if wins else 0.0
+    avg_loss = sum((t.pnl or 0) for t, _ in losses) / len(losses) if losses else 0.0
+    total_wins = sum((t.pnl or 0) for t, _ in wins)
+    total_losses = sum((t.pnl or 0) for t, _ in losses)
+    profit_factor = abs(total_wins / total_losses) if total_losses != 0 else float("inf")
+    total_fees = sum((t.fees or 0) for t, _ in filled)
 
     # Count exit reasons
     exit_reasons = {}
@@ -616,8 +749,8 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
         lines.append(f"- Entry Price: ¢{trade.price * 100:.1f}")
         lines.append(f"- Size: {trade.size:.2f} tokens")
         lines.append(f"- Cost: ${trade.cost:.2f}")
-        lines.append(f"- Fees: ${trade.fees:.2f}")
-        lines.append(f"- Signal Score: {trade.signal_score:+.3f}")
+        lines.append(f"- Fees: ${(trade.fees or 0):.2f}")
+        lines.append(f"- Signal Score: {(trade.signal_score or 0):+.3f}")
         lines.append(f"- Dry Run: {'yes' if trade.is_dry_run else 'no'}")
 
         if log_data_str:

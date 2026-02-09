@@ -6,6 +6,7 @@ Handles order placement with fee awareness, dry-run mode, and position tracking.
 import asyncio
 import logging
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -111,6 +112,9 @@ class OrderManager:
             session_id=session_id,
         )
 
+        # Track the price we requested (before fill changes it)
+        requested_price = price
+
         # Prepare trade log data with buy state
         trade_log_data = None
         if buy_state_snapshot:
@@ -120,6 +124,17 @@ class OrderManager:
                     "order_type": order_type,
                     "position_size_usd": size_usd,
                 }
+
+                # Compute order book imbalance at entry
+                try:
+                    from trading.engine import TradingEngine
+                    ob_key = "orderbook_up" if side == Side.UP else "orderbook_down"
+                    entry_ob = getattr(buy_state_snapshot, ob_key, {})
+                    if entry_ob:
+                        log_entry["orderbook_imbalance_entry"] = TradingEngine.compute_orderbook_imbalance(entry_ob)
+                except Exception as e:
+                    logger.debug(f"Error computing entry OBI: {e}")
+
                 trade_log_data = json.dumps(log_entry, default=str)
             except Exception as e:
                 logger.debug(f"Error serializing buy state: {e}")
@@ -141,9 +156,32 @@ class OrderManager:
                 cost=size_usd,
                 current_price=price,
                 peak_price=price,
+                trough_price=price,
                 entry_time=datetime.now(timezone.utc),
                 is_dry_run=True,
             )
+
+            # Add fill info and slippage for dry run (zero slippage)
+            if trade_log_data:
+                try:
+                    log_entry = json.loads(trade_log_data)
+                    log_entry["entry_slippage"] = {
+                        "requested_price": requested_price,
+                        "fill_price": price,
+                        "slippage_bps": 0.0,
+                        "order_type": order_type,
+                    }
+                    log_entry["fill_info"] = {
+                        "order_type": order_type,
+                        "was_fok": order_type == "market",
+                        "fill_status": "filled",
+                        "time_to_fill_seconds": 0.0,
+                        "retries": 0,
+                        "requested_size": size_tokens,
+                    }
+                    trade_log_data = json.dumps(log_entry, default=str)
+                except Exception:
+                    pass
 
             trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
             return trade
@@ -167,15 +205,19 @@ class OrderManager:
 
             if resp.get("success") or resp.get("orderID"):
                 trade.order_id = resp.get("orderID", resp.get("order_id", "unknown"))
-                
+
                 # VERIFY ORDER STATUS (Fix for Ghost Trades)
                 # Ensure the order wasn't rejected or immediately cancelled
+                fill_start_time = time.time()
+                fill_retries = 0
+                fill_status = "unknown"
                 try:
                     # Poll for fill for up to 5 seconds (non-blocking)
                     max_retries = 5
                     filled = False
 
                     for i in range(max_retries):
+                        fill_retries = i + 1
                         await asyncio.sleep(1.0)
                         order_check = self._pm_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
@@ -237,16 +279,44 @@ class OrderManager:
 
                     # If we get here, it is FILLED
                     trade.status = OrderStatus.FILLED
+                    fill_status = "filled"
 
                 except Exception as e:
                     logger.warning(f"Could not verify order {trade.order_id}: {e}")
                     # Assume FILLED to prevent orphaned positions — market close will reconcile
                     trade.status = OrderStatus.FILLED
+                    fill_status = "unverified"
                     trade.notes = f"UNVERIFIED: API error during verification ({e})"
                     logger.warning("⚠️ Assuming FILLED to prevent orphaned positions")
 
                 trade.notes = f"LIVE: {order_type} {side.value} {size_tokens:.2f} @ {price}"
                 logger.info(f"✅ LIVE ORDER: {trade.notes} (id={trade.order_id})")
+
+                # Enrich trade log with slippage and fill info
+                actual_fill_price = price  # price may have been updated from avgPrice
+                if trade_log_data:
+                    try:
+                        log_entry = json.loads(trade_log_data)
+                        slippage_bps = 0.0
+                        if requested_price > 0:
+                            slippage_bps = (actual_fill_price - requested_price) / requested_price * 10000
+                        log_entry["entry_slippage"] = {
+                            "requested_price": requested_price,
+                            "fill_price": actual_fill_price,
+                            "slippage_bps": round(slippage_bps, 2),
+                            "order_type": order_type,
+                        }
+                        log_entry["fill_info"] = {
+                            "order_type": order_type,
+                            "was_fok": order_type == "market",
+                            "fill_status": fill_status,
+                            "time_to_fill_seconds": round(time.time() - fill_start_time, 2),
+                            "retries": fill_retries,
+                            "requested_size": size_tokens,
+                        }
+                        trade_log_data = json.dumps(log_entry, default=str)
+                    except Exception as e:
+                        logger.debug(f"Error enriching trade log with fill data: {e}")
 
                 self._open_positions[market.condition_id] = Position(
                     market_condition_id=market.condition_id,
@@ -257,6 +327,7 @@ class OrderManager:
                     cost=size_usd,
                     current_price=price,
                     peak_price=price,
+                    trough_price=price,
                     entry_time=datetime.now(timezone.utc),
                     is_dry_run=False,
                 )
@@ -353,6 +424,33 @@ class OrderManager:
                 )
                 log_entry["time_remaining_at_exit"] = 0
 
+                # MAE/MFE tracking
+                if position.entry_price > 0:
+                    mae_pct = (position.entry_price - position.trough_price) / position.entry_price if position.trough_price > 0 else 0
+                    mfe_pct = (position.peak_price - position.entry_price) / position.entry_price if position.peak_price > 0 else 0
+                    actual_return = (resolution_price - position.entry_price) / position.entry_price
+                    log_entry["mae_mfe"] = {
+                        "entry_price": position.entry_price,
+                        "peak_price": position.peak_price,
+                        "trough_price": position.trough_price,
+                        "exit_price": resolution_price,
+                        "mae_pct": round(mae_pct, 6),
+                        "mfe_pct": round(mfe_pct, 6),
+                        "actual_return_pct": round(actual_return, 6),
+                        "capture_ratio": round(actual_return / mfe_pct, 4) if mfe_pct > 0 else 0,
+                    }
+
+                # Order book imbalance at exit
+                if sell_state_snapshot:
+                    try:
+                        from trading.engine import TradingEngine
+                        ob_key = "orderbook_up" if position.side == Side.UP else "orderbook_down"
+                        exit_ob = getattr(sell_state_snapshot, ob_key, {})
+                        if exit_ob:
+                            log_entry["orderbook_imbalance_exit"] = TradingEngine.compute_orderbook_imbalance(exit_ob)
+                    except Exception as e:
+                        logger.debug(f"Error computing exit OBI: {e}")
+
                 # Update trade log data
                 updated_log_data = json.dumps(log_entry, default=str)
                 db.update_trade(trade.id, pnl=pnl, status="filled", trade_log_data=updated_log_data)
@@ -397,6 +495,9 @@ class OrderManager:
         if sell_price <= 0:
             logger.warning(f"Invalid sell price {sell_price}, using current_price")
             sell_price = position.current_price
+
+        # Track requested sell price before fill may change it
+        requested_sell_price = sell_price
 
         # Calculate proceeds and P&L
         proceeds = sell_price * position.size
@@ -516,6 +617,43 @@ class OrderManager:
                         "time_until_close_seconds"
                     )
                 log_entry["time_remaining_at_exit"] = time_remaining
+
+                # Exit slippage (dry run = 0, live = diff between requested and actual)
+                exit_slippage_bps = 0.0
+                if not is_dry_run and requested_sell_price > 0:
+                    exit_slippage_bps = (sell_price - requested_sell_price) / requested_sell_price * 10000
+                log_entry["exit_slippage"] = {
+                    "requested_price": requested_sell_price,
+                    "fill_price": sell_price,
+                    "slippage_bps": round(exit_slippage_bps, 2),
+                }
+
+                # MAE/MFE tracking
+                if position.entry_price > 0:
+                    mae_pct = (position.entry_price - position.trough_price) / position.entry_price if position.trough_price > 0 else 0
+                    mfe_pct = (position.peak_price - position.entry_price) / position.entry_price if position.peak_price > 0 else 0
+                    actual_return = (sell_price - position.entry_price) / position.entry_price
+                    log_entry["mae_mfe"] = {
+                        "entry_price": position.entry_price,
+                        "peak_price": position.peak_price,
+                        "trough_price": position.trough_price,
+                        "exit_price": sell_price,
+                        "mae_pct": round(mae_pct, 6),
+                        "mfe_pct": round(mfe_pct, 6),
+                        "actual_return_pct": round(actual_return, 6),
+                        "capture_ratio": round(actual_return / mfe_pct, 4) if mfe_pct > 0 else 0,
+                    }
+
+                # Order book imbalance at exit
+                if sell_state_snapshot:
+                    try:
+                        from trading.engine import TradingEngine
+                        ob_key = "orderbook_up" if position.side == Side.UP else "orderbook_down"
+                        exit_ob = getattr(sell_state_snapshot, ob_key, {})
+                        if exit_ob:
+                            log_entry["orderbook_imbalance_exit"] = TradingEngine.compute_orderbook_imbalance(exit_ob)
+                    except Exception as e:
+                        logger.debug(f"Error computing exit OBI: {e}")
 
                 updated_log_data = json.dumps(log_entry, default=str)
                 db.update_trade(
