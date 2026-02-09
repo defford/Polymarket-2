@@ -115,6 +115,17 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_bot ON trades(bot_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_bot ON sessions(bot_id)")
 
+    # Analysis runs table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            analysis_json TEXT NOT NULL,
+            trade_count INTEGER DEFAULT 0,
+            session_count INTEGER DEFAULT 0
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -596,6 +607,84 @@ def get_swarm_stats(bot_ids: list[int] = None, since: Optional[str] = None) -> d
         "total_fees": round(row["total_fees"] or 0, 2),
         "win_rate": winning / total_trades if total_trades > 0 else 0.0,
     }
+
+
+# --- Analysis Operations ---
+
+def get_all_filled_trades_with_log_data(bot_ids: list[int] = None, since: str = None) -> list[tuple[Trade, Optional[str]]]:
+    """Get all filled trades with their log data JSON in one query."""
+    conn = get_connection()
+    where_parts = ["status = 'filled'"]
+    params = []
+    if bot_ids:
+        placeholders = ",".join("?" * len(bot_ids))
+        where_parts.append(f"bot_id IN ({placeholders})")
+        params.extend(bot_ids)
+    if since:
+        where_parts.append("timestamp >= ?")
+        params.append(since)
+    where = " AND ".join(where_parts)
+    rows = conn.execute(
+        f"SELECT * FROM trades WHERE {where} ORDER BY timestamp ASC",
+        params,
+    ).fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        trade = _row_to_trade(row)
+        log_data = row["trade_log_data"] if "trade_log_data" in row.keys() else None
+        results.append((trade, log_data))
+    return results
+
+
+def save_analysis_run(analysis_json: str, trade_count: int, session_count: int) -> int:
+    """Persist an analysis result."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO analysis_runs (timestamp, analysis_json, trade_count, session_count)
+           VALUES (?, ?, ?, ?)""",
+        (datetime.utcnow().isoformat(), analysis_json, trade_count, session_count),
+    )
+    run_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def get_latest_analysis_run() -> Optional[dict]:
+    """Get the most recent analysis run."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM analysis_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if row:
+        return {
+            "id": row["id"],
+            "timestamp": row["timestamp"],
+            "analysis": json.loads(row["analysis_json"]),
+            "trade_count": row["trade_count"],
+            "session_count": row["session_count"],
+        }
+    return None
+
+
+def get_analysis_run(run_id: int) -> Optional[dict]:
+    """Get a specific analysis run by ID."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM analysis_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return {
+            "id": row["id"],
+            "timestamp": row["timestamp"],
+            "analysis": json.loads(row["analysis_json"]),
+            "trade_count": row["trade_count"],
+            "session_count": row["session_count"],
+        }
+    return None
 
 
 # Initialize on import
