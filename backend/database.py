@@ -8,7 +8,7 @@ import json
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
-from models import Trade, DailyStats, OrderStatus, Side, TradeLogEntry, Session
+from models import Trade, DailyStats, OrderStatus, Side, TradeLogEntry, Session, BotRecord
 
 DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent.parent / "bot_data.db"))
 
@@ -70,11 +70,22 @@ def init_db():
             status TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS bots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            config_json TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'dry_run',
+            status TEXT NOT NULL DEFAULT 'stopped',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
         CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_condition_id);
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
     """)
-    
+
     # Migration: Add trade_log_data column if it doesn't exist
     try:
         conn.execute("ALTER TABLE trades ADD COLUMN trade_log_data TEXT")
@@ -86,27 +97,42 @@ def init_db():
         conn.execute("ALTER TABLE trades ADD COLUMN session_id INTEGER")
     except sqlite3.OperationalError:
         pass
-    
-    # Create index for session_id after column exists
+
+    # Migration: Add bot_id column to trades
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN bot_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: Add bot_id column to sessions
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN bot_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    # Create indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id)")
-    
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_bot ON trades(bot_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_bot ON sessions(bot_id)")
+
     conn.commit()
     conn.close()
 
 
 # --- Session Operations ---
 
-def create_session(session: Session) -> int:
+def create_session(session: Session, bot_id: Optional[int] = None) -> int:
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO sessions
-           (start_time, start_balance, total_pnl, status)
-           VALUES (?, ?, ?, ?)""",
+           (start_time, start_balance, total_pnl, status, bot_id)
+           VALUES (?, ?, ?, ?, ?)""",
         (
             session.start_time.isoformat(),
             session.start_balance,
             session.total_pnl,
             session.status,
+            bot_id,
         ),
     )
     session_id = cursor.lastrowid
@@ -128,12 +154,18 @@ def update_session(session_id: int, **kwargs):
     conn.close()
 
 
-def get_sessions(limit: int = 20, offset: int = 0) -> list[Session]:
+def get_sessions(limit: int = 20, offset: int = 0, bot_id: Optional[int] = None) -> list[Session]:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM sessions ORDER BY start_time DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
+    if bot_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM sessions WHERE bot_id = ? ORDER BY start_time DESC LIMIT ? OFFSET ?",
+            (bot_id, limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM sessions ORDER BY start_time DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
     conn.close()
     return [_row_to_session(r) for r in rows]
 
@@ -177,13 +209,13 @@ def _row_to_session(row: sqlite3.Row) -> Session:
 
 # --- Trade Operations ---
 
-def insert_trade(trade: Trade, trade_log_data: Optional[str] = None) -> int:
+def insert_trade(trade: Trade, trade_log_data: Optional[str] = None, bot_id: Optional[int] = None) -> int:
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO trades
            (timestamp, market_condition_id, side, token_id, order_id,
-            price, size, cost, status, pnl, fees, is_dry_run, signal_score, notes, trade_log_data, session_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            price, size, cost, status, pnl, fees, is_dry_run, signal_score, notes, trade_log_data, session_id, bot_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             trade.timestamp.isoformat(),
             trade.market_condition_id,
@@ -201,6 +233,7 @@ def insert_trade(trade: Trade, trade_log_data: Optional[str] = None) -> int:
             trade.notes,
             trade_log_data,
             trade.session_id,
+            bot_id,
         ),
     )
     trade_id = cursor.lastrowid
@@ -218,12 +251,18 @@ def update_trade(trade_id: int, **kwargs):
     conn.close()
 
 
-def get_trades(limit: int = 50, offset: int = 0) -> list[Trade]:
+def get_trades(limit: int = 50, offset: int = 0, bot_id: Optional[int] = None) -> list[Trade]:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
+    if bot_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE bot_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (bot_id, limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
     conn.close()
     return [_row_to_trade(r) for r in rows]
 
@@ -291,13 +330,19 @@ def get_trades_with_log_data(session_id: int) -> list[tuple[Trade, Optional[str]
     return results
 
 
-def get_today_trades() -> list[Trade]:
+def get_today_trades(bot_id: Optional[int] = None) -> list[Trade]:
     today = date.today().isoformat()
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp",
-        (today,),
-    ).fetchall()
+    if bot_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE timestamp >= ? AND bot_id = ? ORDER BY timestamp",
+            (today, bot_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp",
+            (today,),
+        ).fetchall()
     conn.close()
     return [_row_to_trade(r) for r in rows]
 
@@ -306,6 +351,7 @@ def _row_to_trade(row: sqlite3.Row) -> Trade:
     return Trade(
         id=row["id"],
         session_id=row["session_id"] if "session_id" in row.keys() else None,
+        bot_id=row["bot_id"] if "bot_id" in row.keys() else None,
         timestamp=datetime.fromisoformat(row["timestamp"]),
         market_condition_id=row["market_condition_id"],
         side=Side(row["side"]),
@@ -348,34 +394,39 @@ def get_session_stats(session_id: int) -> DailyStats:
     )
 
 
-def get_daily_stats(target_date: Optional[str] = None) -> DailyStats:
+def get_daily_stats(target_date: Optional[str] = None, bot_id: Optional[int] = None) -> DailyStats:
     if target_date is None:
         target_date = date.today().isoformat()
 
-    trades = get_today_trades() if target_date == date.today().isoformat() else []
+    trades = get_today_trades(bot_id) if target_date == date.today().isoformat() else []
 
     if not trades:
         conn = get_connection()
-        row = conn.execute(
-            "SELECT * FROM daily_stats WHERE date = ?", (target_date,)
-        ).fetchone()
-        conn.close()
-        if row:
-            return DailyStats(
-                date=row["date"],
-                total_trades=row["total_trades"],
-                winning_trades=row["winning_trades"],
-                losing_trades=row["losing_trades"],
-                total_pnl=row["total_pnl"],
-                fees_paid=row["fees_paid"],
-                largest_win=row["largest_win"],
-                largest_loss=row["largest_loss"],
-                win_rate=(
-                    row["winning_trades"] / row["total_trades"]
-                    if row["total_trades"] > 0
-                    else 0.0
-                ),
-            )
+        # Note: daily_stats table doesn't currently support bot_id breakdown
+        # So we only fallback to table if bot_id is None
+        if bot_id is None:
+            row = conn.execute(
+                "SELECT * FROM daily_stats WHERE date = ?", (target_date,)
+            ).fetchone()
+            conn.close()
+            if row:
+                return DailyStats(
+                    date=row["date"],
+                    total_trades=row["total_trades"],
+                    winning_trades=row["winning_trades"],
+                    losing_trades=row["losing_trades"],
+                    total_pnl=row["total_pnl"],
+                    fees_paid=row["fees_paid"],
+                    largest_win=row["largest_win"],
+                    largest_loss=row["largest_loss"],
+                    win_rate=(
+                        row["winning_trades"] / row["total_trades"]
+                        if row["total_trades"] > 0
+                        else 0.0
+                    ),
+                )
+        else:
+            conn.close()
         return DailyStats(date=target_date)
 
     filled = [t for t in trades if t.status == OrderStatus.FILLED]
@@ -421,6 +472,130 @@ def get_state(key: str, default=None):
     if row:
         return json.loads(row["value"])
     return default
+
+
+# --- Bot CRUD Operations ---
+
+def create_bot(bot: BotRecord) -> int:
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO bots
+           (name, description, config_json, mode, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            bot.name,
+            bot.description,
+            bot.config_json,
+            bot.mode,
+            bot.status,
+            bot.created_at.isoformat() if bot.created_at else datetime.utcnow().isoformat(),
+            bot.updated_at.isoformat() if bot.updated_at else datetime.utcnow().isoformat(),
+        ),
+    )
+    bot_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return bot_id
+
+
+def get_bot(bot_id: int) -> Optional[BotRecord]:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM bots WHERE id = ?", (bot_id,)).fetchone()
+    conn.close()
+    if row:
+        return _row_to_bot(row)
+    return None
+
+
+def get_all_bots() -> list[BotRecord]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM bots ORDER BY id ASC").fetchall()
+    conn.close()
+    return [_row_to_bot(r) for r in rows]
+
+
+def update_bot(bot_id: int, **kwargs):
+    conn = get_connection()
+    for key in list(kwargs.keys()):
+        if isinstance(kwargs[key], datetime):
+            kwargs[key] = kwargs[key].isoformat()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [bot_id]
+    conn.execute(f"UPDATE bots SET {sets} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+def delete_bot(bot_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM bots WHERE id = ?", (bot_id,))
+    conn.commit()
+    conn.close()
+
+
+def _row_to_bot(row: sqlite3.Row) -> BotRecord:
+    return BotRecord(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"] or "",
+        config_json=row["config_json"],
+        mode=row["mode"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+    )
+
+
+def backfill_bot_ids(default_bot_id: int):
+    """Backfill existing trades and sessions with a default bot_id."""
+    conn = get_connection()
+    conn.execute("UPDATE trades SET bot_id = ? WHERE bot_id IS NULL", (default_bot_id,))
+    conn.execute("UPDATE sessions SET bot_id = ? WHERE bot_id IS NULL", (default_bot_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_swarm_stats(bot_ids: list[int] = None, since: Optional[str] = None) -> dict:
+    """Get cumulative stats across multiple bots."""
+    conn = get_connection()
+
+    where_parts = ["status = 'filled'"]
+    params = []
+
+    if bot_ids:
+        placeholders = ",".join("?" * len(bot_ids))
+        where_parts.append(f"bot_id IN ({placeholders})")
+        params.extend(bot_ids)
+
+    if since:
+        where_parts.append("timestamp >= ?")
+        params.append(since)
+
+    where = " AND ".join(where_parts)
+
+    row = conn.execute(
+        f"""SELECT
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+            COALESCE(SUM(pnl), 0) as total_pnl,
+            COALESCE(SUM(fees), 0) as total_fees
+        FROM trades WHERE {where}""",
+        params,
+    ).fetchone()
+    conn.close()
+
+    total_trades = row["total_trades"] or 0
+    winning = row["winning_trades"] or 0
+
+    return {
+        "total_trades": total_trades,
+        "winning_trades": winning,
+        "losing_trades": row["losing_trades"] or 0,
+        "total_pnl": round(row["total_pnl"] or 0, 2),
+        "total_fees": round(row["total_fees"] or 0, 2),
+        "win_rate": winning / total_trades if total_trades > 0 else 0.0,
+    }
 
 
 # Initialize on import

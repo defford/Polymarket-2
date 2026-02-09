@@ -3,6 +3,7 @@ FastAPI server for the Polymarket BTC 15-min Trading Bot.
 
 Provides REST endpoints for configuration and status,
 plus a WebSocket for real-time dashboard updates.
+Supports multiple bots via SwarmManager.
 """
 
 import asyncio
@@ -20,13 +21,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import config_manager, API_HOST, API_PORT
-from models import BotState, ConfigUpdateRequest
-from trading.engine import trading_engine
-from trading.risk import risk_manager
+from models import (
+    BotState, ConfigUpdateRequest, CreateBotRequest, UpdateBotRequest,
+)
 from trading.trade_logger import trade_logger
-from signals.engine import signal_engine
-from polymarket.markets import market_discovery
-from polymarket.orders import order_manager
+from swarm import SwarmManager
 import database as db
 
 # --- Logging Setup ---
@@ -42,28 +41,33 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+# --- Swarm Manager (replaces singleton engine imports) ---
+swarm_manager = SwarmManager()
+
 # --- Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("=" * 60)
-    logger.info("  Polymarket BTC 15-Min Trading Bot")
-    logger.info(f"  Mode: {config_manager.config.mode}")
+    logger.info("  Polymarket BTC 15-Min Trading Bot — Swarm Mode")
     logger.info(f"  API: http://{API_HOST}:{API_PORT}")
     logger.info(f"  Dashboard WS: ws://{API_HOST}:{API_PORT}/ws/dashboard")
     logger.info("=" * 60)
     db.init_db()
+    await swarm_manager.initialize()
+    swarm_manager.set_ws_broadcast(broadcast_state)
+    bot_count = len(swarm_manager.list_bots())
+    logger.info(f"Swarm ready — {bot_count} bot(s) loaded")
     yield
     # Shutdown
-    if trading_engine.is_running:
-        await trading_engine.stop()
+    await swarm_manager.stop_all()
     logger.info("Server shutting down")
 
 
 # --- App ---
 app = FastAPI(
     title="Polymarket BTC 15-Min Trading Bot",
-    version="1.0.0",
+    version="2.0.0",
     description="Automated directional trading bot for Polymarket BTC 15-minute prediction markets",
     lifespan=lifespan,
 )
@@ -116,51 +120,287 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-# --- Wire up WebSocket broadcast to trading engine ---
 async def broadcast_state(data: dict):
     await ws_manager.broadcast(data)
 
-trading_engine.set_ws_broadcast(broadcast_state)
-
 
 # --- Frontend static files ---
-# Check if the built React app exists (from Docker multi-stage build)
 _frontend_dist = Path(__file__).parent / "frontend" / "dist"
 
 # --- REST Endpoints ---
 
 if not _frontend_dist.exists():
-    # No frontend build — redirect root to API docs (dev mode)
     @app.get("/", include_in_schema=False)
     async def root():
         """Redirect root to API docs."""
         return RedirectResponse(url="/docs")
 
 
+# ============================================================
+#  SWARM ENDPOINTS — multi-bot orchestration
+# ============================================================
+
+@app.get("/api/swarm")
+async def list_bots():
+    """List all bots with live state."""
+    return swarm_manager.list_bots()
+
+
+@app.post("/api/swarm")
+async def create_bot(request: CreateBotRequest):
+    """Create a new bot."""
+    from config import BotConfig
+    config = BotConfig.from_dict(request.config) if request.config else None
+    bot_id = await swarm_manager.create_bot(
+        name=request.name,
+        description=request.description,
+        config=config,
+        clone_from=request.clone_from,
+    )
+    return {"bot_id": bot_id, "message": f"Bot '{request.name}' created"}
+
+
+@app.get("/api/swarm/summary")
+async def get_swarm_summary(time_scale: str = "all"):
+    """Get cumulative performance across all bots."""
+    return swarm_manager.get_swarm_summary(time_scale=time_scale)
+
+
+@app.get("/api/swarm/export-latest-sessions")
+async def export_swarm_latest_sessions():
+    """Export the latest session for every bot, formatted for AI consumption."""
+    bots = swarm_manager.list_bots()
+    export_parts = []
+
+    bots.sort(key=lambda x: x["id"])
+
+    now = datetime.now(timezone.utc).isoformat()
+    export_parts.append("# Swarm Latest Sessions Export")
+    export_parts.append(f"Generated: {now}")
+    export_parts.append(f"Total Bots: {len(bots)}")
+    export_parts.append("=" * 60)
+    export_parts.append("")
+
+    for bot in bots:
+        bot_id = bot["id"]
+        bot_name = bot["name"]
+
+        sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
+
+        export_parts.append(f"Bot #{bot_id}: {bot_name}")
+        export_parts.append("-" * 40)
+
+        if not sessions:
+            export_parts.append("No sessions found.")
+            export_parts.append("")
+            export_parts.append("=" * 60)
+            export_parts.append("")
+            continue
+
+        session = sessions[0]
+        stats = db.get_session_stats(session.id)
+        trades_with_logs = db.get_trades_with_log_data(session.id)
+        analytics = _calculate_session_analytics(stats, trades_with_logs)
+        session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+        export_parts.append(session_text)
+        export_parts.append("")
+        export_parts.append("=" * 60)
+        export_parts.append("")
+
+    return {"export_text": "\n".join(export_parts)}
+
+
+@app.put("/api/swarm/{bot_id}")
+async def update_bot_info(bot_id: int, request: UpdateBotRequest):
+    """Update bot name/description."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+
+    updates = {}
+    if request.name is not None:
+        instance.name = request.name
+        updates["name"] = request.name
+    if request.description is not None:
+        instance.description = request.description
+        updates["description"] = request.description
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc)
+        db.update_bot(bot_id, **updates)
+
+    return {"message": "Bot updated", "bot_id": bot_id}
+
+
+@app.delete("/api/swarm/{bot_id}")
+async def delete_bot(bot_id: int):
+    """Delete a bot."""
+    success = await swarm_manager.delete_bot(bot_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return {"message": "Bot deleted", "bot_id": bot_id}
+
+
+@app.post("/api/swarm/{bot_id}/start")
+async def start_swarm_bot(bot_id: int):
+    """Start a specific bot."""
+    try:
+        await swarm_manager.start_bot(bot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    instance = swarm_manager.get_bot(bot_id)
+    return {"message": "Bot started", "status": instance.status}
+
+
+@app.post("/api/swarm/{bot_id}/stop")
+async def stop_swarm_bot(bot_id: int):
+    """Stop a specific bot."""
+    try:
+        await swarm_manager.stop_bot(bot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"message": "Bot stopped", "status": "stopped"}
+
+
+@app.get("/api/swarm/{bot_id}/state")
+async def get_bot_state(bot_id: int):
+    """Get full BotState for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return instance.get_state().model_dump(mode="json")
+
+
+@app.get("/api/swarm/{bot_id}/config")
+async def get_bot_config(bot_id: int):
+    """Get a bot's configuration."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return instance.get_config().to_dict()
+
+
+@app.put("/api/swarm/{bot_id}/config")
+async def update_bot_config(bot_id: int, request: ConfigUpdateRequest):
+    """Update a bot's configuration (hot-reload)."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    try:
+        data = request.model_dump(exclude_none=True)
+        updated = instance.update_config(data)
+        # Persist to DB
+        db.update_bot(
+            bot_id,
+            config_json=json.dumps(updated.to_dict()),
+            mode=updated.mode,
+            updated_at=datetime.now(timezone.utc),
+        )
+        logger.info(f"Bot #{bot_id} config updated: {list(data.keys())}")
+        return updated.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/swarm/{bot_id}/trades")
+async def get_bot_trades(bot_id: int, limit: int = 50, offset: int = 0):
+    """Get trades for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    trades = db.get_trades(limit=limit, offset=offset, bot_id=bot_id)
+    return {
+        "trades": [t.model_dump(mode="json") for t in trades],
+        "count": len(trades),
+    }
+
+
+@app.get("/api/swarm/{bot_id}/sessions")
+async def get_bot_sessions(bot_id: int, limit: int = 20, offset: int = 0):
+    """Get sessions for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    sessions = db.get_sessions(limit=limit, offset=offset, bot_id=bot_id)
+    return [s.model_dump() for s in sessions]
+
+
+@app.get("/api/swarm/{bot_id}/sessions/{session_id}")
+async def get_bot_session_details(bot_id: int, session_id: int):
+    """Get details for a specific session of a bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stats = db.get_session_stats(session_id)
+    trades = db.get_trades_for_session(session_id)
+
+    return {
+        "session": session.model_dump(),
+        "stats": stats.model_dump(),
+        "trades": [t.model_dump(mode="json") for t in trades],
+    }
+
+
+@app.get("/api/swarm/{bot_id}/status")
+async def get_bot_status(bot_id: int):
+    """Get bot status summary."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return {
+        "status": instance.status,
+        "mode": instance.get_config().mode,
+        "is_running": instance.is_running,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ============================================================
+#  LEGACY ENDPOINTS — backward compatibility (delegate to bot 1)
+# ============================================================
+
+def _get_default_bot():
+    """Get the default bot (id=1) or first available bot."""
+    instance = swarm_manager.get_bot(1)
+    if not instance:
+        bots = swarm_manager.list_bots()
+        if bots:
+            instance = swarm_manager.get_bot(bots[0]["id"])
+    return instance
+
+
 @app.get("/api/status")
 async def get_status():
-    """Get bot status summary."""
+    """Get bot status summary (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return {"status": "stopped", "mode": "dry_run", "is_running": False}
     return {
-        "status": trading_engine.status.value,
-        "mode": config_manager.config.mode,
-        "is_running": trading_engine.is_running,
-        "risk": risk_manager.get_state(),
+        "status": instance.status,
+        "mode": instance.get_config().mode,
+        "is_running": instance.is_running,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
 @app.get("/api/market")
 async def get_market():
-    """Get current active 15-min market info."""
+    """Get current active 15-min market info (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return {"active": False, "market": None, "windows": {}}
+
+    from polymarket.markets import market_discovery
     market = market_discovery.current_market
     window_info = market_discovery.get_current_window_info()
-    
+
     if not market:
-        return {
-            "active": False, 
-            "market": None,
-            "windows": window_info,
-        }
+        return {"active": False, "market": None, "windows": window_info}
 
     time_remaining = market_discovery.time_until_close()
     return {
@@ -174,11 +414,14 @@ async def get_market():
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get open positions."""
-    positions = order_manager.open_positions
+    """Get open positions (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return {"positions": [], "count": 0}
+    state = instance.get_state()
     return {
-        "positions": [p.model_dump() for p in positions],
-        "count": len(positions),
+        "positions": [p.model_dump() for p in state.open_positions],
+        "count": len(state.open_positions),
     }
 
 
@@ -194,15 +437,7 @@ async def get_trades(limit: int = 50, offset: int = 0):
 
 @app.get("/api/trades/export")
 async def export_trades(include_incomplete: bool = True):
-    """
-    Export all trades with complete market state to JSON file.
-    
-    Args:
-        include_incomplete: If True, includes trades without complete log data
-    
-    Returns:
-        Export summary with file path
-    """
+    """Export all trades with complete market state to JSON file."""
     try:
         file_path = trade_logger.export_all_trades_to_json(
             include_incomplete=include_incomplete
@@ -260,10 +495,10 @@ async def get_session_details(session_id: int):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     stats = db.get_session_stats(session_id)
     trades = db.get_trades_for_session(session_id)
-    
+
     return {
         "session": session.model_dump(),
         "stats": stats.model_dump(),
@@ -271,22 +506,8 @@ async def get_session_details(session_id: int):
     }
 
 
-@app.get("/api/sessions/{session_id}/export")
-async def export_session(session_id: int):
-    """
-    Export a complete session as structured text optimized for AI consumption.
-
-    Returns session overview, performance analytics, and full trade logs
-    with market state data formatted for readability.
-    """
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    stats = db.get_session_stats(session_id)
-    trades_with_logs = db.get_trades_with_log_data(session_id)
-
-    # Compute analytics
+def _calculate_session_analytics(stats, trades_with_logs):
+    """Compute detailed analytics for a session."""
     filled = [(t, ld) for t, ld in trades_with_logs if t.status.value == "filled"]
     wins = [(t, ld) for t, ld in filled if (t.pnl or 0) > 0]
     losses = [(t, ld) for t, ld in filled if (t.pnl or 0) < 0]
@@ -307,7 +528,7 @@ async def export_session(session_id: int):
             except Exception:
                 pass
 
-    analytics = {
+    return {
         "total_trades": len(filled),
         "wins": len(wins),
         "losses": len(losses),
@@ -321,7 +542,18 @@ async def export_session(session_id: int):
         "exit_reasons": exit_reasons,
     }
 
-    # Build export text
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: int):
+    """Export a complete session as structured text optimized for AI consumption."""
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stats = db.get_session_stats(session_id)
+    trades_with_logs = db.get_trades_with_log_data(session_id)
+
+    analytics = _calculate_session_analytics(stats, trades_with_logs)
     export_text = _format_session_export(session, stats, analytics, trades_with_logs)
 
     return {
@@ -330,6 +562,7 @@ async def export_session(session_id: int):
         "analytics": analytics,
         "export_text": export_text,
     }
+
 
 
 def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
@@ -504,25 +737,41 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
 
 @app.get("/api/signals")
 async def get_signals():
-    """Get current signal state."""
-    signal = signal_engine.last_signal
-    if signal:
-        return signal.model_dump(mode="json")
+    """Get current signal state (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return {"message": "No signal computed yet"}
+    state = instance.get_state()
+    if state.current_signal:
+        return state.current_signal.model_dump(mode="json")
     return {"message": "No signal computed yet"}
 
 
 @app.get("/api/config")
 async def get_config():
-    """Get current bot configuration."""
-    return config_manager.config.to_dict()
+    """Get current bot configuration (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return config_manager.config.to_dict()
+    return instance.get_config().to_dict()
 
 
 @app.put("/api/config")
 async def update_config(request: ConfigUpdateRequest):
-    """Update bot configuration (hot-reload)."""
+    """Update bot configuration (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        raise HTTPException(status_code=404, detail="No bot available")
     try:
         data = request.model_dump(exclude_none=True)
-        updated = config_manager.update(data)
+        updated = instance.update_config(data)
+        bot_id = 1  # default bot
+        db.update_bot(
+            bot_id,
+            config_json=json.dumps(updated.to_dict()),
+            mode=updated.mode,
+            updated_at=datetime.now(timezone.utc),
+        )
         logger.info(f"Configuration updated: {list(data.keys())}")
         return updated.to_dict()
     except Exception as e:
@@ -531,31 +780,37 @@ async def update_config(request: ConfigUpdateRequest):
 
 @app.post("/api/bot/start")
 async def start_bot():
-    """Start the trading engine."""
-    if trading_engine.is_running:
-        return {"message": "Bot is already running", "status": trading_engine.status.value}
-
-    await trading_engine.start()
-    return {"message": "Bot started", "status": trading_engine.status.value}
+    """Start the trading engine (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        raise HTTPException(status_code=404, detail="No bot available")
+    if instance.is_running:
+        return {"message": "Bot is already running", "status": instance.status}
+    await instance.start()
+    return {"message": "Bot started", "status": instance.status}
 
 
 @app.post("/api/bot/stop")
 async def stop_bot():
-    """Stop the trading engine."""
-    if not trading_engine.is_running:
-        return {"message": "Bot is already stopped", "status": trading_engine.status.value}
-
-    await trading_engine.stop()
-    return {"message": "Bot stopped", "status": trading_engine.status.value}
+    """Stop the trading engine (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        raise HTTPException(status_code=404, detail="No bot available")
+    if not instance.is_running:
+        return {"message": "Bot is already stopped", "status": instance.status}
+    await instance.stop()
+    return {"message": "Bot stopped", "status": instance.status}
 
 
 @app.get("/api/stats")
 async def get_stats():
-    """Get daily and overall statistics."""
-    daily = db.get_daily_stats()
-    state = trading_engine.get_state()
+    """Get daily and overall statistics (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return {"daily": {}, "total_pnl": 0.0, "consecutive_losses": 0}
+    state = instance.get_state()
     return {
-        "daily": daily.model_dump(),
+        "daily": state.daily_stats.model_dump(),
         "total_pnl": state.total_pnl,
         "consecutive_losses": state.consecutive_losses,
     }
@@ -563,9 +818,11 @@ async def get_stats():
 
 @app.get("/api/state")
 async def get_full_state():
-    """Get the complete bot state (dashboard payload)."""
-    state = trading_engine.get_state()
-    return state.model_dump(mode="json")
+    """Get the complete bot state (legacy — uses default bot)."""
+    instance = _get_default_bot()
+    if not instance:
+        return BotState().model_dump(mode="json")
+    return instance.get_state().model_dump(mode="json")
 
 
 # --- WebSocket Endpoint ---
@@ -574,28 +831,31 @@ async def get_full_state():
 async def websocket_dashboard(websocket: WebSocket):
     """
     WebSocket endpoint for real-time dashboard updates.
-    Clients receive bot state every time the trading loop ticks.
+    Sends swarm_state on connect, then per-bot updates as they come.
     """
     await ws_manager.connect(websocket)
     try:
-        # Send initial state
-        state = trading_engine.get_state()
-        await websocket.send_text(json.dumps(state.model_dump(mode="json"), default=str))
+        # Send initial swarm state
+        all_states = swarm_manager.get_all_states()
+        await websocket.send_text(json.dumps({
+            "type": "swarm_state",
+            "bots": all_states,
+        }, default=str))
 
         # Keep connection alive and handle client messages
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-                # Handle ping/pong or client commands
                 if data == "ping":
                     await websocket.send_text("pong")
             except asyncio.TimeoutError:
-                # Send periodic state update even without trading loop
+                # Send periodic full swarm state
                 try:
-                    state = trading_engine.get_state()
-                    await websocket.send_text(
-                        json.dumps(state.model_dump(mode="json"), default=str)
-                    )
+                    all_states = swarm_manager.get_all_states()
+                    await websocket.send_text(json.dumps({
+                        "type": "swarm_state",
+                        "bots": all_states,
+                    }, default=str))
                 except Exception:
                     break
 
@@ -619,15 +879,14 @@ if _frontend_dist.exists():
 # --- Entry point ---
 if __name__ == "__main__":
     import os
-    # Disable bytecode caching to ensure fresh code is always loaded
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    
+
     import uvicorn
     uvicorn.run(
-        app,  # Use direct app reference, not string import
+        app,
         host=API_HOST,
         port=API_PORT,
         reload=False,
         log_level="info",
-        workers=1,  # Single worker to avoid multiprocessing reimport issues
+        workers=1,
     )

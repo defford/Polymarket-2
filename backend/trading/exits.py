@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 def _compute_pressure_multiplier(
     position_side: Side,
     pressure: dict,
+    config_mgr=None,
 ) -> float:
     """
     Convert BTC short-term pressure into a stop-loss multiplier.
@@ -42,6 +43,7 @@ def _compute_pressure_multiplier(
     Args:
         position_side: Which side we're holding (UP or DOWN)
         pressure: Output from compute_short_term_pressure()
+        config_mgr: Optional config manager (default: global)
 
     Returns:
         Multiplier for the trailing stop percentage:
@@ -49,7 +51,8 @@ def _compute_pressure_multiplier(
         - 1.0: neutral
         - < 1.0: BTC is against us -> tighten stop (less tolerance)
     """
-    exit_config = config_manager.config.exit
+    _cfg = config_mgr if config_mgr is not None else config_manager
+    exit_config = _cfg.config.exit
     raw_pressure = pressure.get("pressure", 0.0)
 
     if not exit_config.pressure_scaling_enabled:
@@ -85,6 +88,9 @@ def _compute_pressure_multiplier(
 def evaluate_exit(
     position: Position,
     signal: CompositeSignal,
+    config_mgr=None,
+    mkt_discovery=None,
+    btc_client=None,
 ) -> Optional[dict]:
     """
     Evaluate whether an open position should be exited early.
@@ -95,6 +101,9 @@ def evaluate_exit(
     Args:
         position: The open position to evaluate
         signal: Latest composite signal
+        config_mgr: Optional config manager (default: global)
+        mkt_discovery: Optional market discovery (default: global)
+        btc_client: Optional binance client (default: global)
 
     Returns:
         Decision dict with keys:
@@ -106,7 +115,11 @@ def evaluate_exit(
             btc_pressure: Raw BTC pressure value
         Or None if no exit warranted.
     """
-    exit_config = config_manager.config.exit
+    _cfg = config_mgr if config_mgr is not None else config_manager
+    _discovery = mkt_discovery if mkt_discovery is not None else market_discovery
+    _btc = btc_client if btc_client is not None else binance_client
+
+    exit_config = _cfg.config.exit
 
     if not exit_config.enabled:
         return None
@@ -123,17 +136,17 @@ def evaluate_exit(
 
     # --- Compute BTC short-term pressure ---
     try:
-        candles = binance_client.fetch_all_timeframes()
-        signal_config = config_manager.config.signal
+        candles = _btc.fetch_all_timeframes()
+        signal_config = _cfg.config.signal
         pressure = compute_short_term_pressure(candles, signal_config)
     except Exception as e:
         logger.debug(f"Could not compute BTC pressure: {e}")
         pressure = {"pressure": 0.0, "momentum": 0.0, "alignment": 0, "details": {}}
 
-    pressure_multiplier = _compute_pressure_multiplier(position.side, pressure)
+    pressure_multiplier = _compute_pressure_multiplier(position.side, pressure, config_mgr=_cfg)
 
     # --- Determine base trailing stop from time remaining ---
-    time_remaining = market_discovery.time_until_close()
+    time_remaining = _discovery.time_until_close()
     base_trailing = exit_config.trailing_stop_pct
 
     time_zone_label = "normal"

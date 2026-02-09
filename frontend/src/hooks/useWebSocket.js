@@ -4,7 +4,7 @@ const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/dashboard`
 
 export function useWebSocket() {
-  const [state, setState] = useState(null)
+  const [swarmState, setSwarmState] = useState({})
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
@@ -19,7 +19,6 @@ export function useWebSocket() {
 
       ws.onopen = () => {
         setConnected(true)
-        // Keep alive with ping
         pingTimer.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send('ping')
@@ -31,7 +30,23 @@ export function useWebSocket() {
         if (event.data === 'pong') return
         try {
           const data = JSON.parse(event.data)
-          setState(data)
+
+          if (data.type === 'swarm_state' && data.bots) {
+            // Full swarm state update
+            setSwarmState(data.bots)
+          } else if (data.type === 'bot_state' && data.bot_id != null) {
+            // Single bot update
+            setSwarmState(prev => ({
+              ...prev,
+              [String(data.bot_id)]: data.state,
+            }))
+          } else if (!data.type) {
+            // Legacy single-bot state (no type field) — assign to key "1"
+            setSwarmState(prev => ({
+              ...prev,
+              '1': data,
+            }))
+          }
         } catch (e) {
           // ignore parse errors
         }
@@ -40,7 +55,6 @@ export function useWebSocket() {
       ws.onclose = () => {
         setConnected(false)
         clearInterval(pingTimer.current)
-        // Reconnect after 3 seconds
         reconnectTimer.current = setTimeout(connect, 3000)
       }
 
@@ -63,5 +77,5 @@ export function useWebSocket() {
     }
   }, [connect])
 
-  return { state, connected }
+  return { swarmState, connected }
 }

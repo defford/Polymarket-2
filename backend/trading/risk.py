@@ -19,12 +19,17 @@ class RiskManager:
     Enforces all risk management rules before allowing a trade.
     """
 
-    def __init__(self):
+    def __init__(self, config_mgr=None):
+        self._config_mgr = config_mgr  # None = use global singleton
         self._consecutive_losses = 0
         self._cooldown_until: Optional[datetime] = None
         self._trades_this_window: dict[str, int] = {}  # condition_id -> count
         self._daily_pnl = 0.0
         self._last_daily_reset: Optional[str] = None
+
+    @property
+    def _cfg(self):
+        return self._config_mgr if self._config_mgr is not None else config_manager
 
     @property
     def consecutive_losses(self) -> int:
@@ -54,7 +59,7 @@ class RiskManager:
         Returns:
             (allowed: bool, reason: str)
         """
-        config = config_manager.config.risk
+        config = self._cfg.config.risk
 
         # Reset daily stats if new day
         self._check_daily_reset()
@@ -96,7 +101,7 @@ class RiskManager:
         Get the allowed position size for the next trade.
         Reduced based on consecutive losses to limit drawdown.
         """
-        config = config_manager.config.risk
+        config = self._cfg.config.risk
         base_size = config.max_position_size
 
         # Reduce size after consecutive losses (scale down by 25% per loss)

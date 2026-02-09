@@ -121,6 +121,7 @@ class Trade(BaseModel):
     is_dry_run: bool = True
     signal_score: float = 0.0
     notes: str = ""
+    bot_id: Optional[int] = None
 
 
 class Position(BaseModel):
@@ -209,3 +210,29 @@ class BacktestRequest(BaseModel):
     start_date: str  # ISO format
     end_date: str
     config_override: Optional[dict] = None
+
+
+# --- Swarm Models ---
+
+class BotRecord(BaseModel):
+    """Persisted bot definition for the swarm."""
+    id: Optional[int] = None
+    name: str
+    description: str = ""
+    config_json: str = "{}"  # serialized BotConfig
+    mode: str = "dry_run"
+    status: str = "stopped"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class CreateBotRequest(BaseModel):
+    name: str
+    description: str = ""
+    config: Optional[dict] = None  # full BotConfig dict
+    clone_from: Optional[int] = None  # bot_id to clone config from
+
+
+class UpdateBotRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None

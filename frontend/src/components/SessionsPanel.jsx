@@ -42,7 +42,7 @@ function formatPnl(value) {
   return `${sign}$${num.toFixed(2)}`
 }
 
-export default function SessionsPanel() {
+export default function SessionsPanel({ botId }) {
   const { get } = useApi()
   const [sessions, setSessions] = useState([])
   const [selectedSessionId, setSelectedSessionId] = useState(null)
@@ -51,14 +51,34 @@ export default function SessionsPanel() {
   const [selectedTrade, setSelectedTrade] = useState(null)
   const [copyState, setCopyState] = useState('idle') // 'idle' | 'loading' | 'copied'
 
+  const sessionsUrl = botId ? `/api/swarm/${botId}/sessions` : '/api/sessions'
+  const sessionDetailUrl = (sid) =>
+    botId ? `/api/swarm/${botId}/sessions/${sid}` : `/api/sessions/${sid}`
+
+  const copyToClipboard = (text) => {
+    // Use execCommand fallback as primary — navigator.clipboard.writeText can
+    // hang indefinitely when the tab lacks focus (e.g. PWA, unfocused tab)
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { /* ignore */ }
+    document.body.removeChild(textarea)
+    return ok
+  }
+
   const handleCopyForAI = async (sessionId) => {
     setCopyState('loading')
     try {
       const data = await get(`/api/sessions/${sessionId}/export`)
       if (data?.export_text) {
-        await navigator.clipboard.writeText(data.export_text)
-        setCopyState('copied')
-        setTimeout(() => setCopyState('idle'), 2000)
+        const ok = await copyToClipboard(data.export_text)
+        setCopyState(ok ? 'copied' : 'idle')
+        if (ok) setTimeout(() => setCopyState('idle'), 2000)
       } else {
         setCopyState('idle')
       }
@@ -70,16 +90,16 @@ export default function SessionsPanel() {
 
   // Fetch list of sessions
   useEffect(() => {
-    get('/api/sessions').then(data => {
+    get(sessionsUrl).then(data => {
       if (data) setSessions(data)
     })
-  }, [get])
+  }, [get, sessionsUrl])
 
   // Fetch details when a session is selected
   useEffect(() => {
     if (selectedSessionId) {
       setLoading(true)
-      get(`/api/sessions/${selectedSessionId}`).then(data => {
+      get(sessionDetailUrl(selectedSessionId)).then(data => {
         setSessionDetails(data)
         setLoading(false)
       })
