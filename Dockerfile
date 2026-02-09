@@ -4,6 +4,8 @@ FROM node:20-alpine AS frontend-build
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci
+# Cache-bust: changing FRONTEND_VERSION invalidates the COPY + build layers
+ARG FRONTEND_VERSION=1
 COPY frontend/ ./
 RUN npm run build
 
