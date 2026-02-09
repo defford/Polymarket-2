@@ -169,51 +169,56 @@ async def get_swarm_summary(time_scale: str = "all"):
 @app.get("/api/swarm/export-latest-sessions")
 async def export_swarm_latest_sessions():
     """Export the latest session for every bot, formatted for AI consumption."""
-    bots = swarm_manager.list_bots()
-    export_parts = []
+    try:
+        bots = swarm_manager.list_bots()
+        export_parts = []
 
-    bots.sort(key=lambda x: x["id"])
+        bots.sort(key=lambda x: x["id"])
 
-    now = datetime.now(timezone.utc).isoformat()
-    export_parts.append("# Swarm Latest Sessions Export")
-    export_parts.append(f"Generated: {now}")
-    export_parts.append(f"Total Bots: {len(bots)}")
-    export_parts.append("=" * 60)
-    export_parts.append("")
-
-    for bot in bots:
-        bot_id = bot["id"]
-        bot_name = bot["name"]
-
-        export_parts.append(f"Bot #{bot_id}: {bot_name}")
-        export_parts.append("-" * 40)
-
-        try:
-            sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
-
-            if not sessions:
-                export_parts.append("No sessions found.")
-                export_parts.append("")
-                export_parts.append("=" * 60)
-                export_parts.append("")
-                continue
-
-            session = sessions[0]
-            stats = db.get_session_stats(session.id)
-            trades_with_logs = db.get_trades_with_log_data(session.id)
-            analytics = _calculate_session_analytics(stats, trades_with_logs)
-            session_text = _format_session_export(session, stats, analytics, trades_with_logs)
-
-            export_parts.append(session_text)
-        except Exception as e:
-            logger.error(f"Error exporting bot #{bot_id} ({bot_name}): {e}", exc_info=True)
-            export_parts.append(f"Error exporting session: {e}")
-
-        export_parts.append("")
+        now = datetime.now(timezone.utc).isoformat()
+        export_parts.append("# Swarm Latest Sessions Export")
+        export_parts.append(f"Generated: {now}")
+        export_parts.append(f"Total Bots: {len(bots)}")
         export_parts.append("=" * 60)
         export_parts.append("")
 
-    return {"export_text": "\n".join(export_parts)}
+        for bot in bots:
+            bot_id = bot["id"]
+            bot_name = bot["name"]
+
+            export_parts.append(f"Bot #{bot_id}: {bot_name}")
+            export_parts.append("-" * 40)
+
+            try:
+                sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
+
+                if not sessions:
+                    export_parts.append("No sessions found.")
+                    export_parts.append("")
+                    export_parts.append("=" * 60)
+                    export_parts.append("")
+                    continue
+
+                session = sessions[0]
+                stats = db.get_session_stats(session.id)
+                trades_with_logs = db.get_trades_with_log_data(session.id)
+                analytics = _calculate_session_analytics(stats, trades_with_logs)
+                session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+                export_parts.append(session_text)
+            except Exception as e:
+                logger.error(f"Error exporting bot #{bot_id} ({bot_name}): {e}", exc_info=True)
+                export_parts.append(f"Error exporting session: {e}")
+
+            export_parts.append("")
+            export_parts.append("=" * 60)
+            export_parts.append("")
+
+        return {"export_text": "\n".join(export_parts)}
+
+    except Exception as e:
+        logger.error(f"Critical error in export-latest-sessions: {e}", exc_info=True)
+        return {"export_text": f"Critical Error: {str(e)}"}
 
 
 @app.put("/api/swarm/{bot_id}")
