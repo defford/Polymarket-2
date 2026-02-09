@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus } from 'lucide-react'
+import { Plus, Copy, Check } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import SwarmSummary from './SwarmSummary'
 import BotCard from './BotCard'
@@ -9,6 +9,7 @@ export default function SwarmView({ swarmState, onSelectBot }) {
   const { get } = useApi()
   const [bots, setBots] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const [copyStatus, setCopyStatus] = useState('idle') // idle, loading, success, error
 
   const fetchBots = useCallback(() => {
     get('/api/swarm').then(data => {
@@ -26,8 +27,59 @@ export default function SwarmView({ swarmState, onSelectBot }) {
     return () => clearInterval(interval)
   }, [fetchBots])
 
+  const handleCopyForAI = async () => {
+    setCopyStatus('loading')
+    try {
+      const data = await get('/api/swarm/export-latest-sessions')
+      if (data && data.export_text) {
+        await navigator.clipboard.writeText(data.export_text)
+        setCopyStatus('success')
+        setTimeout(() => setCopyStatus('idle'), 2000)
+      } else {
+        setCopyStatus('error')
+        setTimeout(() => setCopyStatus('idle'), 2000)
+      }
+    } catch (err) {
+      console.error('Failed to copy swarm sessions:', err)
+      setCopyStatus('error')
+      setTimeout(() => setCopyStatus('idle'), 2000)
+    }
+  }
+
   return (
     <div className="space-y-4 animate-fade-in">
+      <div className="flex justify-end mb-2">
+        <button
+          onClick={handleCopyForAI}
+          disabled={copyStatus === 'loading'}
+          className={`
+            flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono font-bold transition-all
+            ${copyStatus === 'success' 
+              ? 'bg-accent-green/20 text-accent-green border border-accent-green/30' 
+              : copyStatus === 'error'
+              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+              : 'bg-surface-3 hover:bg-surface-4 text-text-secondary border border-transparent hover:border-surface-4'
+            }
+          `}
+        >
+          {copyStatus === 'loading' ? (
+            <span className="animate-pulse">Generating...</span>
+          ) : copyStatus === 'success' ? (
+            <>
+              <Check className="w-3.5 h-3.5" />
+              Copied!
+            </>
+          ) : copyStatus === 'error' ? (
+            <>Error</>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              Copy Latest Sessions for AI
+            </>
+          )}
+        </button>
+      </div>
+
       <SwarmSummary />
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

@@ -166,6 +166,51 @@ async def get_swarm_summary(time_scale: str = "all"):
     return swarm_manager.get_swarm_summary(time_scale=time_scale)
 
 
+@app.get("/api/swarm/export-latest-sessions")
+async def export_swarm_latest_sessions():
+    """Export the latest session for every bot, formatted for AI consumption."""
+    bots = swarm_manager.list_bots()
+    export_parts = []
+
+    bots.sort(key=lambda x: x["id"])
+
+    now = datetime.now(timezone.utc).isoformat()
+    export_parts.append("# Swarm Latest Sessions Export")
+    export_parts.append(f"Generated: {now}")
+    export_parts.append(f"Total Bots: {len(bots)}")
+    export_parts.append("=" * 60)
+    export_parts.append("")
+
+    for bot in bots:
+        bot_id = bot["id"]
+        bot_name = bot["name"]
+
+        sessions = db.get_sessions(limit=1, offset=0, bot_id=bot_id)
+
+        export_parts.append(f"Bot #{bot_id}: {bot_name}")
+        export_parts.append("-" * 40)
+
+        if not sessions:
+            export_parts.append("No sessions found.")
+            export_parts.append("")
+            export_parts.append("=" * 60)
+            export_parts.append("")
+            continue
+
+        session = sessions[0]
+        stats = db.get_session_stats(session.id)
+        trades_with_logs = db.get_trades_with_log_data(session.id)
+        analytics = _calculate_session_analytics(stats, trades_with_logs)
+        session_text = _format_session_export(session, stats, analytics, trades_with_logs)
+
+        export_parts.append(session_text)
+        export_parts.append("")
+        export_parts.append("=" * 60)
+        export_parts.append("")
+
+    return {"export_text": "\n".join(export_parts)}
+
+
 @app.put("/api/swarm/{bot_id}")
 async def update_bot_info(bot_id: int, request: UpdateBotRequest):
     """Update bot name/description."""
@@ -461,17 +506,8 @@ async def get_session_details(session_id: int):
     }
 
 
-@app.get("/api/sessions/{session_id}/export")
-async def export_session(session_id: int):
-    """Export a complete session as structured text optimized for AI consumption."""
-    session = db.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    stats = db.get_session_stats(session_id)
-    trades_with_logs = db.get_trades_with_log_data(session_id)
-
-    # Compute analytics
+def _calculate_session_analytics(stats, trades_with_logs):
+    """Compute detailed analytics for a session."""
     filled = [(t, ld) for t, ld in trades_with_logs if t.status.value == "filled"]
     wins = [(t, ld) for t, ld in filled if (t.pnl or 0) > 0]
     losses = [(t, ld) for t, ld in filled if (t.pnl or 0) < 0]
@@ -492,7 +528,7 @@ async def export_session(session_id: int):
             except Exception:
                 pass
 
-    analytics = {
+    return {
         "total_trades": len(filled),
         "wins": len(wins),
         "losses": len(losses),
@@ -506,6 +542,18 @@ async def export_session(session_id: int):
         "exit_reasons": exit_reasons,
     }
 
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: int):
+    """Export a complete session as structured text optimized for AI consumption."""
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stats = db.get_session_stats(session_id)
+    trades_with_logs = db.get_trades_with_log_data(session_id)
+
+    analytics = _calculate_session_analytics(stats, trades_with_logs)
     export_text = _format_session_export(session, stats, analytics, trades_with_logs)
 
     return {
@@ -514,6 +562,7 @@ async def export_session(session_id: int):
         "analytics": analytics,
         "export_text": export_text,
     }
+
 
 
 def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
