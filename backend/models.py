@@ -136,6 +136,7 @@ class Position(BaseModel):
     peak_price: float = 0.0       # highest price since entry (for trailing stop)
     entry_time: Optional[datetime] = None  # when we entered
     is_dry_run: bool = True
+    take_profit_hit: bool = False  # whether take profit target has been reached
 
 
 # --- Snapshot Models ---
@@ -202,6 +203,7 @@ class ConfigUpdateRequest(BaseModel):
     risk: Optional[dict] = None
     trading: Optional[dict] = None
     exit: Optional[dict] = None
+    take_profit: Optional[dict] = None
     mode: Optional[str] = None
 
 

@@ -62,6 +62,12 @@
     "pressure_tighten_min": 0.4,
     "pressure_neutral_zone": 0.15
   },
+  "take_profit": {
+    "enabled": true,
+    "target_pct": 0.15,
+    "trailing_after_tp": true,
+    "trailing_after_tp_pct": 0.05
+  },
   "trading": {
     "order_type": "postOnly",
     "price_offset": 0.01,

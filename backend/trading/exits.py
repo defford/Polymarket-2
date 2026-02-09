@@ -99,7 +99,7 @@ def evaluate_exit(
     Returns:
         Decision dict with keys:
             reason: Full human-readable reason string
-            reason_category: "trailing_stop" | "hard_stop" | "signal_reversal"
+            reason_category: "take_profit" | "trailing_stop" | "hard_stop" | "signal_reversal"
             effective_trailing_pct: The final trailing stop % used
             pressure_multiplier: BTC pressure multiplier applied
             time_zone: "normal" | "TIGHT" | "FINAL"
@@ -132,18 +132,61 @@ def evaluate_exit(
 
     pressure_multiplier = _compute_pressure_multiplier(position.side, pressure)
 
+    # --- Check take profit target ---
+    tp_config = config_manager.config.take_profit
+    if (
+        tp_config.enabled
+        and position.entry_price > 0
+        and position.current_price > 0
+    ):
+        gain_from_entry = (position.current_price - position.entry_price) / position.entry_price
+
+        if gain_from_entry >= tp_config.target_pct:
+            if not tp_config.trailing_after_tp:
+                # Immediate full take profit exit
+                reason = (
+                    f"take_profit: price {position.current_price:.3f} gained "
+                    f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
+                    f"(target: {tp_config.target_pct:.0%})"
+                )
+                logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
+                return {
+                    "reason": reason,
+                    "reason_category": "take_profit",
+                    "effective_trailing_pct": 0.0,
+                    "pressure_multiplier": pressure_multiplier,
+                    "time_zone": "take_profit",
+                    "btc_pressure": pressure.get("pressure", 0.0),
+                }
+
+            # Mark that TP target was hit — switches to tight trailing stop
+            if not position.take_profit_hit:
+                position.take_profit_hit = True
+                logger.info(
+                    f"🎯 TAKE PROFIT TARGET HIT: {position.current_price:.3f} "
+                    f"(+{gain_from_entry:.1%} from entry {position.entry_price:.3f}) — "
+                    f"switching to tight trailing stop ({tp_config.trailing_after_tp_pct:.0%})"
+                )
+
     # --- Determine base trailing stop from time remaining ---
     time_remaining = market_discovery.time_until_close()
     base_trailing = exit_config.trailing_stop_pct
 
+    # If take profit target was hit, use the tighter TP trailing stop
+    if position.take_profit_hit and tp_config.enabled:
+        base_trailing = tp_config.trailing_after_tp_pct
+
     time_zone_label = "normal"
+    if position.take_profit_hit:
+        time_zone_label = "TP_TRAILING"
     if time_remaining is not None:
         if time_remaining <= exit_config.final_seconds:
-            base_trailing = exit_config.final_trailing_pct
+            base_trailing = min(base_trailing, exit_config.final_trailing_pct)
             time_zone_label = "FINAL"
         elif time_remaining <= exit_config.tighten_at_seconds:
-            base_trailing = exit_config.tightened_trailing_pct
-            time_zone_label = "TIGHT"
+            base_trailing = min(base_trailing, exit_config.tightened_trailing_pct)
+            if not position.take_profit_hit:
+                time_zone_label = "TIGHT"
 
     # --- Apply pressure multiplier to trailing stop ---
     effective_trailing = base_trailing * pressure_multiplier

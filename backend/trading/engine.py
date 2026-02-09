@@ -276,17 +276,52 @@ class TradingEngine:
                         if held < exit_config.min_hold_seconds:
                             continue
 
+                    # --- Take profit check (fast loop) ---
+                    tp_config = config_manager.config.take_profit
+                    if (
+                        tp_config.enabled
+                        and position.entry_price > 0
+                        and ws_price > 0
+                    ):
+                        gain_from_entry = (ws_price - position.entry_price) / position.entry_price
+                        if gain_from_entry >= tp_config.target_pct:
+                            if not tp_config.trailing_after_tp:
+                                reason = (
+                                    f"take_profit: price {ws_price:.3f} gained "
+                                    f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
+                                    f"(target: {tp_config.target_pct:.0%}) (WS fast-check)"
+                                )
+                                logger.info(f"🎯 FAST EXIT -- {reason}")
+                                await self._execute_exit(condition_id, reason, "take_profit")
+                                exited = True
+                                break
+
+                            if not position.take_profit_hit:
+                                position.take_profit_hit = True
+                                logger.info(
+                                    f"🎯 TAKE PROFIT TARGET HIT (fast): {ws_price:.3f} "
+                                    f"(+{gain_from_entry:.1%}) — tight trailing active"
+                                )
+
                     # Determine time-based trailing stop
                     time_remaining = market_discovery.time_until_close()
                     base_trailing = exit_config.trailing_stop_pct
+
+                    # Use tighter trailing stop after take profit target is hit
+                    if position.take_profit_hit and tp_config.enabled:
+                        base_trailing = tp_config.trailing_after_tp_pct
+
                     time_zone = "normal"
+                    if position.take_profit_hit:
+                        time_zone = "TP_TRAILING"
                     if time_remaining is not None:
                         if time_remaining <= exit_config.final_seconds:
-                            base_trailing = exit_config.final_trailing_pct
+                            base_trailing = min(base_trailing, exit_config.final_trailing_pct)
                             time_zone = "FINAL"
                         elif time_remaining <= exit_config.tighten_at_seconds:
-                            base_trailing = exit_config.tightened_trailing_pct
-                            time_zone = "TIGHT"
+                            base_trailing = min(base_trailing, exit_config.tightened_trailing_pct)
+                            if not position.take_profit_hit:
+                                time_zone = "TIGHT"
 
                     # --- Trailing stop (no BTC pressure — slow loop handles that) ---
                     if position.peak_price > 0 and position.current_price > 0:
@@ -493,6 +528,12 @@ class TradingEngine:
                 "final_trailing_pct": config.exit.final_trailing_pct,
                 "min_hold_seconds": config.exit.min_hold_seconds,
                 "pressure_scaling_enabled": config.exit.pressure_scaling_enabled,
+            },
+            "take_profit": {
+                "enabled": config.take_profit.enabled,
+                "target_pct": config.take_profit.target_pct,
+                "trailing_after_tp": config.take_profit.trailing_after_tp,
+                "trailing_after_tp_pct": config.take_profit.trailing_after_tp_pct,
             },
             "mode": config.mode,
         }

@@ -547,7 +547,9 @@ class OrderManager:
 def _parse_exit_reason(reason: str) -> str:
     """Parse a detailed exit reason string into a category."""
     reason_lower = reason.lower()
-    if reason_lower.startswith("trailing_stop"):
+    if reason_lower.startswith("take_profit"):
+        return "take_profit"
+    elif reason_lower.startswith("trailing_stop"):
         return "trailing_stop"
     elif reason_lower.startswith("hard_stop"):
         return "hard_stop"

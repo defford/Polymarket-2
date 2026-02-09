@@ -93,6 +93,16 @@ class ExitConfig:
 
 
 @dataclass
+class TakeProfitConfig:
+    """Take profit parameters."""
+
+    enabled: bool = True                     # master switch for take profit
+    target_pct: float = 0.15                 # exit when price rises 15% above entry
+    trailing_after_tp: bool = True           # instead of immediate exit, switch to tight trailing stop
+    trailing_after_tp_pct: float = 0.05      # trailing stop % after take profit target is hit
+
+
+@dataclass
 class TradingConfig:
     """Trading behavior parameters."""
 
@@ -111,6 +121,7 @@ class BotConfig:
     signal: SignalConfig = field(default_factory=SignalConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     exit: ExitConfig = field(default_factory=ExitConfig)
+    take_profit: TakeProfitConfig = field(default_factory=TakeProfitConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     mode: str = "dry_run"  # "dry_run" or "live"
 
@@ -123,6 +134,7 @@ class BotConfig:
             signal=SignalConfig(**data.get("signal", {})),
             risk=RiskConfig(**data.get("risk", {})),
             exit=ExitConfig(**data.get("exit", {})),
+            take_profit=TakeProfitConfig(**data.get("take_profit", {})),
             trading=TradingConfig(**data.get("trading", {})),
             mode=data.get("mode", "dry_run"),
         )
