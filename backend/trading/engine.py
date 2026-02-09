@@ -18,7 +18,7 @@ from typing import Optional
 from config import config_manager
 from models import (
     BotStatus, BotState, CompositeSignal, MarketInfo, Side,
-    MarketStateSnapshot, Session,
+    MarketStateSnapshot, OrderStatus, Session,
 )
 from polymarket.client import polymarket_client
 from polymarket.markets import market_discovery
@@ -49,6 +49,7 @@ class TradingEngine:
         self._ws_broadcast_fn = None  # Set by main.py for WebSocket broadcasts
         self._current_session_id: Optional[int] = None
         self._position_lock = asyncio.Lock()  # Protects _open_positions from concurrent access
+        self._active_mode: str = "dry_run"  # Tracks the mode the client is actually initialized for
 
     @property
     def status(self) -> BotStatus:
@@ -62,6 +63,33 @@ class TradingEngine:
         """Set the WebSocket broadcast function."""
         self._ws_broadcast_fn = fn
 
+    def _sync_mode(self):
+        """
+        Detect config mode changes at runtime and re-initialize the
+        Polymarket client so that switching from dry-run → live (or back)
+        actually takes effect without restarting the bot.
+        """
+        desired_mode = config_manager.config.mode
+        if desired_mode == self._active_mode:
+            return  # No change
+
+        if desired_mode == "live":
+            try:
+                polymarket_client.init_authenticated()
+                self._status = BotStatus.RUNNING
+                self._active_mode = "live"
+                logger.info("🔄 Mode changed to LIVE — client re-authenticated")
+            except Exception as e:
+                logger.error(f"Failed to switch to live mode: {e}")
+                logger.info("Keeping current dry-run mode due to auth failure")
+                # Revert the config back to dry_run so the dashboard stays consistent
+                config_manager.update({"mode": "dry_run"})
+        else:
+            polymarket_client.init_read_only()
+            self._status = BotStatus.DRY_RUN
+            self._active_mode = "dry_run"
+            logger.info("🔄 Mode changed to DRY RUN — client switched to read-only")
+
     async def start(self):
         """Start the trading engine."""
         if self._running:
@@ -69,6 +97,7 @@ class TradingEngine:
             return
 
         config = config_manager.config
+        self._active_mode = config.mode  # Track active mode for hot-reload detection
 
         # Initialize Polymarket client
         if config.mode == "live":
@@ -158,6 +187,9 @@ class TradingEngine:
         while self._running:
             try:
                 loop_start = time.time()
+
+                # Step 0: Detect hot-reload mode changes (dry_run ↔ live)
+                self._sync_mode()
 
                 # Step 1: Discover/check active market
                 market = await self._ensure_active_market()
@@ -702,13 +734,18 @@ class TradingEngine:
                 session_id=self._current_session_id,
             )
 
-        if trade:
+        if trade and trade.status == OrderStatus.FILLED:
             logger.info(
                 f"{'🧪' if is_dry_run else '✅'} "
                 f"{'DRY RUN' if is_dry_run else 'LIVE'}: "
                 f"{signal.recommended_side.value.upper()} "
                 f"${position_size:.2f} @ {trade.price:.3f} "
                 f"(signal={signal.composite_score:+.3f})"
+            )
+        elif trade and trade.status == OrderStatus.REJECTED:
+            logger.warning(
+                f"❌ Trade REJECTED: {signal.recommended_side.value.upper()} "
+                f"${position_size:.2f} — {trade.notes}"
             )
 
     async def _broadcast_state(self, market: MarketInfo, signal: CompositeSignal):
