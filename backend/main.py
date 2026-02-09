@@ -361,6 +361,127 @@ async def get_bot_status(bot_id: int):
 
 
 # ============================================================
+#  ANALYSIS ENDPOINTS — trade analysis → config generation → bot creation
+# ============================================================
+
+@app.post("/api/analysis/run")
+async def run_analysis(
+    bot_ids: Optional[list[int]] = None,
+    since: Optional[str] = None,
+):
+    """Run full trade analysis across all bots/sessions."""
+    from analysis.engine import AnalysisEngine
+
+    engine = AnalysisEngine()
+    result = engine.run_analysis(bot_ids=bot_ids, since=since)
+
+    # Persist
+    analysis_id = db.save_analysis_run(
+        analysis_json=json.dumps(result, default=str),
+        trade_count=result.get("trade_count", 0),
+        session_count=result.get("session_count", 0),
+    )
+
+    return {
+        "analysis_id": analysis_id,
+        "summary": result.get("summary", {}),
+        "trade_count": result.get("trade_count", 0),
+        "session_count": result.get("session_count", 0),
+        "warning": result.get("warning"),
+        "message": f"Analysis complete: {result.get('trade_count', 0)} trades across {result.get('session_count', 0)} sessions",
+    }
+
+
+@app.get("/api/analysis/latest")
+async def get_latest_analysis():
+    """Get the most recent analysis result."""
+    result = db.get_latest_analysis_run()
+    if not result:
+        raise HTTPException(status_code=404, detail="No analysis runs found. Run POST /api/analysis/run first.")
+    return result
+
+
+@app.post("/api/analysis/generate-config")
+async def generate_config(
+    analysis_id: Optional[int] = None,
+    optimization_goal: str = "balanced",
+    base_config_from_bot: Optional[int] = None,
+):
+    """Generate an optimized bot config from trade analysis using AI."""
+    from config import BotConfig, ANTHROPIC_API_KEY
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="ANTHROPIC_API_KEY not configured. Add it to your .env file.",
+        )
+
+    # Load analysis
+    if analysis_id:
+        run = db.get_analysis_run(analysis_id)
+    else:
+        run = db.get_latest_analysis_run()
+    if not run:
+        raise HTTPException(status_code=404, detail="No analysis found. Run POST /api/analysis/run first.")
+
+    analysis = run["analysis"]
+    if analysis.get("trade_count", 0) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough trade data ({analysis.get('trade_count', 0)} trades). Need at least 10 filled trades.",
+        )
+
+    # Load base config
+    base_config = None
+    if base_config_from_bot:
+        instance = swarm_manager.get_bot(base_config_from_bot)
+        if instance:
+            base_config = instance.get_config()
+    if not base_config:
+        base_config = BotConfig()
+
+    # Generate
+    from analysis.config_builder import ConfigBuilder
+    try:
+        builder = ConfigBuilder()
+        recommendation = builder.generate_config(
+            analysis=analysis,
+            goal=optimization_goal,
+            base_config=base_config,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {"recommendation": recommendation}
+
+
+@app.post("/api/analysis/create-bot")
+async def create_bot_from_analysis(
+    config: dict = None,
+    name: str = "Optimized Bot",
+    description: str = "",
+):
+    """Create a new bot from an AI-generated config recommendation."""
+    from config import BotConfig
+
+    if not config:
+        raise HTTPException(status_code=400, detail="config is required")
+
+    try:
+        bot_config = BotConfig.from_dict(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
+
+    bot_id = await swarm_manager.create_bot(
+        name=name,
+        description=description,
+        config=bot_config,
+    )
+
+    return {"bot_id": bot_id, "message": f"Bot '{name}' created from analysis"}
+
+
+# ============================================================
 #  LEGACY ENDPOINTS — backward compatibility (delegate to bot 1)
 # ============================================================
 
