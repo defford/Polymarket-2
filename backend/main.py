@@ -321,8 +321,9 @@ async def export_session(session_id: int):
         "exit_reasons": exit_reasons,
     }
 
-    # Build export text
-    export_text = _format_session_export(session, stats, analytics, trades_with_logs)
+    # Build export text (include current bot config)
+    current_config = config_manager.config.to_dict()
+    export_text = _format_session_export(session, stats, analytics, trades_with_logs, current_config)
 
     return {
         "session": session.model_dump(),
@@ -332,7 +333,7 @@ async def export_session(session_id: int):
     }
 
 
-def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
+def _format_session_export(session, stats, analytics, trades_with_logs, current_config=None) -> str:
     """Format a session as structured text for AI consumption."""
     lines = []
     now = datetime.now(timezone.utc).isoformat()
@@ -341,6 +342,66 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
     lines.append(f"# Session #{session.id} Export")
     lines.append(f"Generated: {now}")
     lines.append("")
+
+    # Current Bot Configuration
+    if current_config:
+        lines.append("## Current Bot Configuration")
+        lines.append(f"- Mode: {current_config.get('mode', 'N/A')}")
+        lines.append("")
+
+        sig = current_config.get("signal", {})
+        if sig:
+            lines.append("### Signal Settings")
+            lines.append(f"- Layer 1 Weight: {sig.get('layer1_weight', 'N/A')}")
+            lines.append(f"- Layer 2 Weight: {sig.get('layer2_weight', 'N/A')}")
+            lines.append(f"- Buy Threshold: {sig.get('buy_threshold', 'N/A')}")
+            lines.append(f"- RSI Period: {sig.get('pm_rsi_period', 'N/A')} (oversold={sig.get('pm_rsi_oversold', 'N/A')}, overbought={sig.get('pm_rsi_overbought', 'N/A')})")
+            lines.append(f"- MACD: fast={sig.get('pm_macd_fast', 'N/A')} slow={sig.get('pm_macd_slow', 'N/A')} signal={sig.get('pm_macd_signal', 'N/A')}")
+            lines.append(f"- Momentum Lookback: {sig.get('pm_momentum_lookback', 'N/A')}")
+            btc_emas = []
+            for tf in ["1m", "5m", "15m", "1h", "4h", "1d"]:
+                key = f"btc_ema_{tf}"
+                if key in sig:
+                    btc_emas.append(f"{tf}={sig[key]}")
+            if btc_emas:
+                lines.append(f"- BTC EMAs: {', '.join(btc_emas)}")
+            lines.append("")
+
+        risk = current_config.get("risk", {})
+        if risk:
+            lines.append("### Risk Settings")
+            lines.append(f"- Max Position Size: ${risk.get('max_position_size', 'N/A')}")
+            lines.append(f"- Max Trades/Window: {risk.get('max_trades_per_window', 'N/A')}")
+            lines.append(f"- Max Daily Loss: ${risk.get('max_daily_loss', 'N/A')}")
+            lines.append(f"- Min Signal Confidence: {risk.get('min_signal_confidence', 'N/A')}")
+            lines.append(f"- Max Consecutive Losses: {risk.get('max_consecutive_losses', 'N/A')}")
+            lines.append(f"- Cooldown: {risk.get('cooldown_minutes', 'N/A')} min")
+            lines.append(f"- Stop Before Close: {risk.get('stop_trading_minutes_before_close', 'N/A')} min")
+            lines.append(f"- Max Entry Price: {risk.get('max_entry_price', 'N/A')}")
+            lines.append("")
+
+        exit_cfg = current_config.get("exit", {})
+        if exit_cfg:
+            lines.append("### Exit Settings")
+            lines.append(f"- Enabled: {exit_cfg.get('enabled', 'N/A')}")
+            lines.append(f"- Trailing Stop: {exit_cfg.get('trailing_stop_pct', 'N/A')}")
+            lines.append(f"- Hard Stop: {exit_cfg.get('hard_stop_pct', 'N/A')}")
+            lines.append(f"- Signal Reversal Threshold: {exit_cfg.get('signal_reversal_threshold', 'N/A')}")
+            lines.append(f"- Tighten At: {exit_cfg.get('tighten_at_seconds', 'N/A')}s (trailing={exit_cfg.get('tightened_trailing_pct', 'N/A')})")
+            lines.append(f"- Final Zone: {exit_cfg.get('final_seconds', 'N/A')}s (trailing={exit_cfg.get('final_trailing_pct', 'N/A')})")
+            lines.append(f"- Min Hold: {exit_cfg.get('min_hold_seconds', 'N/A')}s")
+            lines.append(f"- Pressure Scaling: enabled={exit_cfg.get('pressure_scaling_enabled', 'N/A')} widen_max={exit_cfg.get('pressure_widen_max', 'N/A')} tighten_min={exit_cfg.get('pressure_tighten_min', 'N/A')} neutral={exit_cfg.get('pressure_neutral_zone', 'N/A')}")
+            lines.append("")
+
+        trading = current_config.get("trading", {})
+        if trading:
+            lines.append("### Trading Settings")
+            lines.append(f"- Order Type: {trading.get('order_type', 'N/A')}")
+            lines.append(f"- Price Offset: {trading.get('price_offset', 'N/A')}")
+            lines.append(f"- FOK for Strong Signals: {trading.get('use_fok_for_strong_signals', 'N/A')} (threshold={trading.get('strong_signal_threshold', 'N/A')})")
+            lines.append(f"- Poll Interval: {trading.get('poll_interval_seconds', 'N/A')}s")
+            lines.append(f"- Market Discovery Interval: {trading.get('market_discovery_interval_seconds', 'N/A')}s")
+            lines.append("")
 
     # Session Overview
     lines.append("## Session Overview")
