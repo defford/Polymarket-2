@@ -135,6 +135,7 @@ class Position(BaseModel):
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
     peak_price: float = 0.0       # highest price since entry (for trailing stop)
+    trough_price: float = 0.0     # lowest price since entry (for MAE tracking)
     entry_time: Optional[datetime] = None  # when we entered
     is_dry_run: bool = True
 

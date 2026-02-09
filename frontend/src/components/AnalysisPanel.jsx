@@ -143,6 +143,10 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
               <AnalysisSummary data={analysis.summary} />
               <SignalBuckets data={analysis.signal_score_buckets} />
               <ExitReasons data={analysis.exit_reasons} />
+              <SlippageAnalysis data={analysis.slippage} />
+              <MaeMfeAnalysis data={analysis.mae_mfe} />
+              <FillRateAnalysis data={analysis.fill_rate} />
+              <OrderbookAnalysis data={analysis.orderbook} />
               <ThresholdAnalysis data={analysis.threshold_analysis} />
               <LayerAnalysis data={analysis.layer_weight_analysis} />
               <TimePatterns data={analysis.time_patterns} />
@@ -538,6 +542,233 @@ function PerBotComparison({ data }) {
           ))}
         </tbody>
       </table>
+    </CollapsibleSection>
+  )
+}
+
+function SlippageAnalysis({ data }) {
+  if (!data || !data.by_order_type || Object.keys(data.by_order_type).length === 0) return null
+  return (
+    <CollapsibleSection title="Slippage Analysis">
+      <table className="w-full text-xs font-mono">
+        <thead>
+          <tr className="text-text-dim text-2xs">
+            <th className="text-left pb-1">Order Type</th>
+            <th className="text-right pb-1">Trades</th>
+            <th className="text-right pb-1">Entry Slip</th>
+            <th className="text-right pb-1">Exit Slip</th>
+            <th className="text-right pb-1">Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(data.by_order_type).map(([type, d]) => (
+            <tr key={type} className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">{type}</td>
+              <td className="py-1 text-right text-text-dim">{d.count}</td>
+              <td className={`py-1 text-right ${d.avg_entry_slippage_bps > 0 ? 'text-accent-red' : 'text-accent-green'}`}>
+                {d.avg_entry_slippage_bps?.toFixed(1)} bps
+              </td>
+              <td className={`py-1 text-right ${d.avg_exit_slippage_bps < 0 ? 'text-accent-red' : 'text-accent-green'}`}>
+                {d.avg_exit_slippage_bps?.toFixed(1)} bps
+              </td>
+              <td className="py-1 text-right text-accent-red">${d.total_slippage_cost?.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="data-row mt-2">
+        <span className="data-label">Total Slippage Cost</span>
+        <span className="data-value text-accent-red">${data.total_slippage_cost?.toFixed(2)}</span>
+      </div>
+    </CollapsibleSection>
+  )
+}
+
+function MaeMfeAnalysis({ data }) {
+  if (!data || (!data.winners?.count && !data.losers?.count)) return null
+  return (
+    <CollapsibleSection title="MAE / MFE Analysis">
+      <div className="space-y-3">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="text-text-dim text-2xs">
+              <th className="text-left pb-1">Metric</th>
+              <th className="text-right pb-1">Winners</th>
+              <th className="text-right pb-1">Losers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">Count</td>
+              <td className="py-1 text-right text-accent-green">{data.winners?.count || 0}</td>
+              <td className="py-1 text-right text-accent-red">{data.losers?.count || 0}</td>
+            </tr>
+            <tr className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">Avg MAE (drawdown)</td>
+              <td className="py-1 text-right text-text-dim">{((data.winners?.avg_mae_pct || 0) * 100).toFixed(2)}%</td>
+              <td className="py-1 text-right text-text-dim">{((data.losers?.avg_mae_pct || 0) * 100).toFixed(2)}%</td>
+            </tr>
+            <tr className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">Avg MFE (max profit)</td>
+              <td className="py-1 text-right text-text-dim">{((data.winners?.avg_mfe_pct || 0) * 100).toFixed(2)}%</td>
+              <td className="py-1 text-right text-text-dim">{((data.losers?.avg_mfe_pct || 0) * 100).toFixed(2)}%</td>
+            </tr>
+          </tbody>
+        </table>
+        {data.winners?.avg_capture_ratio != null && (
+          <div className="data-row">
+            <span className="data-label">Profit Capture Ratio</span>
+            <span className="data-value">{((data.winners.avg_capture_ratio || 0) * 100).toFixed(0)}%</span>
+          </div>
+        )}
+        {data.winners?.avg_missed_profit_pct != null && (
+          <div className="data-row">
+            <span className="data-label">Avg Missed Profit</span>
+            <span className="data-value text-accent-yellow">{((data.winners.avg_missed_profit_pct || 0) * 100).toFixed(2)}%</span>
+          </div>
+        )}
+        {data.recovery_by_mae_threshold && Object.keys(data.recovery_by_mae_threshold).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Recovery After Drawdown</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">MAE Threshold</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Recovery Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.recovery_by_mae_threshold).map(([thresh, d]) => (
+                  <tr key={thresh} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary">Dipped {thresh}+</td>
+                    <td className="py-1 text-right text-text-dim">{d.total}</td>
+                    <td className={`py-1 text-right ${d.recovery_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.recovery_rate * 100).toFixed(0)}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
+  )
+}
+
+function FillRateAnalysis({ data }) {
+  if (!data || !data.by_order_type || Object.keys(data.by_order_type).length === 0) return null
+  return (
+    <CollapsibleSection title="Fill Rate Analysis">
+      <table className="w-full text-xs font-mono">
+        <thead>
+          <tr className="text-text-dim text-2xs">
+            <th className="text-left pb-1">Order Type</th>
+            <th className="text-right pb-1">Attempts</th>
+            <th className="text-right pb-1">Fill Rate</th>
+            <th className="text-right pb-1">Avg Time</th>
+            <th className="text-right pb-1">Avg PnL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(data.by_order_type).map(([type, d]) => (
+            <tr key={type} className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">{type}</td>
+              <td className="py-1 text-right text-text-dim">{d.total_attempts}</td>
+              <td className={`py-1 text-right ${d.fill_rate >= 0.9 ? 'text-accent-green' : d.fill_rate >= 0.7 ? 'text-accent-yellow' : 'text-accent-red'}`}>
+                {(d.fill_rate * 100).toFixed(0)}%
+              </td>
+              <td className="py-1 text-right text-text-dim">{d.avg_time_to_fill?.toFixed(1)}s</td>
+              <td className={`py-1 text-right ${d.avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                ${d.avg_pnl?.toFixed(4)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.fok_vs_limit && (
+        <div className="space-y-1 mt-2">
+          <div className="data-row">
+            <span className="data-label">FOK Trades</span>
+            <span className="data-value">{data.fok_vs_limit.fok_count} (avg ${data.fok_vs_limit.fok_avg_pnl?.toFixed(4)})</span>
+          </div>
+          <div className="data-row">
+            <span className="data-label">Limit Trades</span>
+            <span className="data-value">{data.fok_vs_limit.non_fok_count} (avg ${data.fok_vs_limit.non_fok_avg_pnl?.toFixed(4)})</span>
+          </div>
+        </div>
+      )}
+    </CollapsibleSection>
+  )
+}
+
+function OrderbookAnalysis({ data }) {
+  if (!data || (!data.winners?.count && !data.losers?.count)) return null
+  return (
+    <CollapsibleSection title="Order Book Analysis">
+      <div className="space-y-3">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="text-text-dim text-2xs">
+              <th className="text-left pb-1">Metric</th>
+              <th className="text-right pb-1">Winners</th>
+              <th className="text-right pb-1">Losers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">Avg Imbalance</td>
+              <td className={`py-1 text-right ${(data.winners?.avg_imbalance_at_entry || 0) > 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                {data.winners?.avg_imbalance_at_entry?.toFixed(4)}
+              </td>
+              <td className={`py-1 text-right ${(data.losers?.avg_imbalance_at_entry || 0) > 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                {data.losers?.avg_imbalance_at_entry?.toFixed(4)}
+              </td>
+            </tr>
+            <tr className="border-t border-surface-2">
+              <td className="py-1 text-text-secondary">Avg Spread</td>
+              <td className="py-1 text-right text-text-dim">{data.winners?.avg_spread_at_entry?.toFixed(4)}</td>
+              <td className="py-1 text-right text-text-dim">{data.losers?.avg_spread_at_entry?.toFixed(4)}</td>
+            </tr>
+          </tbody>
+        </table>
+        {data.imbalance_vs_pnl_correlation != null && (
+          <div className="data-row">
+            <span className="data-label">Imbalance vs PnL Correlation</span>
+            <span className="data-value">{data.imbalance_vs_pnl_correlation?.toFixed(4)}</span>
+          </div>
+        )}
+        {data.by_imbalance_direction && Object.keys(data.by_imbalance_direction).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">By Imbalance Direction</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Direction</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.by_imbalance_direction).map(([dir, d]) => (
+                  <tr key={dir} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary">{dir.replace('_', ' ')}</td>
+                    <td className="py-1 text-right text-text-dim">{d.count}</td>
+                    <td className={`py-1 text-right ${d.win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className={`py-1 text-right ${d.avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      ${d.avg_pnl?.toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </CollapsibleSection>
   )
 }

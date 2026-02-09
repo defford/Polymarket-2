@@ -84,6 +84,10 @@ class AnalysisEngine:
             "btc_pressure": self._btc_pressure_analysis(trades_with_log),
             "consecutive_losses": self._consecutive_loss_analysis(trades),
             "per_bot": self._per_bot_comparison(trades),
+            "slippage": self._slippage_analysis(trades_with_log),
+            "mae_mfe": self._mae_mfe_analysis(trades_with_log),
+            "fill_rate": self._fill_rate_analysis(trades_with_log),
+            "orderbook": self._orderbook_analysis(trades_with_log),
             "trade_count": total_trades,
             "session_count": len(session_ids),
         }
@@ -553,6 +557,291 @@ class AnalysisEngine:
                 "config": bot_configs.get(bot_id, {}),
             }
         return result
+
+    # ------------------------------------------------------------------
+    # 12. Slippage Analysis
+    # ------------------------------------------------------------------
+
+    def _slippage_analysis(self, trades: list[dict]) -> dict:
+        by_order_type = defaultdict(lambda: {
+            "count": 0, "total_entry_slippage_bps": 0.0, "total_exit_slippage_bps": 0.0,
+            "total_slippage_cost": 0.0, "total_pnl": 0.0,
+        })
+
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            entry_slip = ld.get("entry_slippage")
+            exit_slip = ld.get("exit_slippage")
+            if not entry_slip and not exit_slip:
+                continue
+
+            has_data = True
+            order_type = (entry_slip or {}).get("order_type", "unknown")
+            pnl = t["trade"].pnl or 0
+            b = by_order_type[order_type]
+            b["count"] += 1
+            b["total_pnl"] += pnl
+
+            if entry_slip:
+                b["total_entry_slippage_bps"] += entry_slip.get("slippage_bps", 0)
+                # Estimate cost: slippage_bps * position_cost / 10000
+                cost = t["trade"].cost or 0
+                b["total_slippage_cost"] += abs(entry_slip.get("slippage_bps", 0)) * cost / 10000
+            if exit_slip:
+                b["total_exit_slippage_bps"] += exit_slip.get("slippage_bps", 0)
+
+        if not has_data:
+            return {}
+
+        result = {}
+        total_cost = 0.0
+        total_count = 0
+        for ot, data in sorted(by_order_type.items()):
+            c = data["count"]
+            total_cost += data["total_slippage_cost"]
+            total_count += c
+            result[ot] = {
+                "count": c,
+                "avg_entry_slippage_bps": round(data["total_entry_slippage_bps"] / c, 2) if c else 0,
+                "avg_exit_slippage_bps": round(data["total_exit_slippage_bps"] / c, 2) if c else 0,
+                "total_slippage_cost": round(data["total_slippage_cost"], 4),
+                "avg_pnl": round(data["total_pnl"] / c, 4) if c else 0,
+            }
+
+        return {
+            "by_order_type": result,
+            "total_slippage_cost": round(total_cost, 4),
+            "total_trades_with_data": total_count,
+        }
+
+    # ------------------------------------------------------------------
+    # 13. MAE/MFE Analysis
+    # ------------------------------------------------------------------
+
+    def _mae_mfe_analysis(self, trades: list[dict]) -> dict:
+        winners = {"count": 0, "total_mae": 0.0, "total_mfe": 0.0, "total_capture": 0.0, "total_missed": 0.0}
+        losers = {"count": 0, "total_mae": 0.0, "total_mfe": 0.0}
+        mae_buckets = defaultdict(lambda: {"count": 0, "recovered": 0})
+
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            mae_mfe = ld.get("mae_mfe")
+            if not mae_mfe:
+                continue
+
+            has_data = True
+            pnl = t["trade"].pnl or 0
+            mae_pct = mae_mfe.get("mae_pct", 0) or 0
+            mfe_pct = mae_mfe.get("mfe_pct", 0) or 0
+            capture = mae_mfe.get("capture_ratio", 0) or 0
+            actual_return = mae_mfe.get("actual_return_pct", 0) or 0
+
+            if pnl > 0:
+                winners["count"] += 1
+                winners["total_mae"] += mae_pct
+                winners["total_mfe"] += mfe_pct
+                winners["total_capture"] += capture
+                winners["total_missed"] += max(0, mfe_pct - actual_return)
+            else:
+                losers["count"] += 1
+                losers["total_mae"] += mae_pct
+                losers["total_mfe"] += mfe_pct
+
+            # MAE recovery buckets (what % of trades that dipped X% recovered to profit?)
+            for thresh in [0.01, 0.02, 0.05, 0.10, 0.15]:
+                if mae_pct >= thresh:
+                    key = f"{thresh:.0%}"
+                    mae_buckets[key]["count"] += 1
+                    if pnl > 0:
+                        mae_buckets[key]["recovered"] += 1
+
+        if not has_data:
+            return {}
+
+        wc = winners["count"]
+        lc = losers["count"]
+
+        recovery_by_mae = {}
+        for key in sorted(mae_buckets.keys()):
+            b = mae_buckets[key]
+            recovery_by_mae[key] = {
+                "total": b["count"],
+                "recovery_rate": round(b["recovered"] / b["count"], 4) if b["count"] else 0,
+            }
+
+        return {
+            "winners": {
+                "count": wc,
+                "avg_mae_pct": round(winners["total_mae"] / wc, 6) if wc else 0,
+                "avg_mfe_pct": round(winners["total_mfe"] / wc, 6) if wc else 0,
+                "avg_capture_ratio": round(winners["total_capture"] / wc, 4) if wc else 0,
+                "avg_missed_profit_pct": round(winners["total_missed"] / wc, 6) if wc else 0,
+            },
+            "losers": {
+                "count": lc,
+                "avg_mae_pct": round(losers["total_mae"] / lc, 6) if lc else 0,
+                "avg_mfe_pct": round(losers["total_mfe"] / lc, 6) if lc else 0,
+            },
+            "recovery_by_mae_threshold": recovery_by_mae,
+        }
+
+    # ------------------------------------------------------------------
+    # 14. Fill Rate Analysis
+    # ------------------------------------------------------------------
+
+    def _fill_rate_analysis(self, trades: list[dict]) -> dict:
+        by_type = defaultdict(lambda: {
+            "total": 0, "filled": 0, "cancelled": 0, "rejected": 0,
+            "total_time": 0.0, "total_retries": 0, "total_pnl": 0.0,
+        })
+
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            fi = ld.get("fill_info")
+            if not fi:
+                continue
+
+            has_data = True
+            ot = fi.get("order_type", "unknown")
+            status = fi.get("fill_status", "unknown")
+            pnl = t["trade"].pnl or 0
+            b = by_type[ot]
+            b["total"] += 1
+            b["total_pnl"] += pnl
+            b["total_time"] += fi.get("time_to_fill_seconds", 0) or 0
+            b["total_retries"] += fi.get("retries", 0) or 0
+
+            if status == "filled":
+                b["filled"] += 1
+            elif status == "cancelled":
+                b["cancelled"] += 1
+            elif status in ("rejected", "unverified"):
+                b["rejected"] += 1
+
+        if not has_data:
+            return {}
+
+        result = {}
+        for ot, data in sorted(by_type.items()):
+            c = data["total"]
+            result[ot] = {
+                "total_attempts": c,
+                "fill_rate": round(data["filled"] / c, 4) if c else 0,
+                "cancelled": data["cancelled"],
+                "rejected": data["rejected"],
+                "avg_time_to_fill": round(data["total_time"] / c, 2) if c else 0,
+                "avg_retries": round(data["total_retries"] / c, 1) if c else 0,
+                "avg_pnl": round(data["total_pnl"] / c, 4) if c else 0,
+            }
+
+        # FOK vs non-FOK comparison
+        fok_trades = [t for t in trades if t["log_data"].get("fill_info", {}).get("was_fok")]
+        non_fok = [t for t in trades if t["log_data"].get("fill_info") and not t["log_data"]["fill_info"].get("was_fok")]
+
+        fok_pnl = sum(t["trade"].pnl or 0 for t in fok_trades) if fok_trades else 0
+        non_fok_pnl = sum(t["trade"].pnl or 0 for t in non_fok) if non_fok else 0
+
+        return {
+            "by_order_type": result,
+            "fok_vs_limit": {
+                "fok_count": len(fok_trades),
+                "fok_avg_pnl": round(fok_pnl / len(fok_trades), 4) if fok_trades else 0,
+                "non_fok_count": len(non_fok),
+                "non_fok_avg_pnl": round(non_fok_pnl / len(non_fok), 4) if non_fok else 0,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # 15. Order Book Analysis
+    # ------------------------------------------------------------------
+
+    def _orderbook_analysis(self, trades: list[dict]) -> dict:
+        winners = {"count": 0, "total_imbalance": 0.0, "total_spread": 0.0}
+        losers = {"count": 0, "total_imbalance": 0.0, "total_spread": 0.0}
+        imbalance_buckets = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0})
+
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            obi_entry = ld.get("orderbook_imbalance_entry")
+            if not obi_entry:
+                continue
+
+            has_data = True
+            pnl = t["trade"].pnl or 0
+            imbalance = obi_entry.get("imbalance", 0) or 0
+            spread = obi_entry.get("spread", 0) or 0
+
+            if pnl > 0:
+                winners["count"] += 1
+                winners["total_imbalance"] += imbalance
+                winners["total_spread"] += spread
+            else:
+                losers["count"] += 1
+                losers["total_imbalance"] += imbalance
+                losers["total_spread"] += spread
+
+            # Bucket by imbalance direction
+            if imbalance > 0.2:
+                key = "strong_bid"
+            elif imbalance > 0:
+                key = "slight_bid"
+            elif imbalance > -0.2:
+                key = "slight_ask"
+            else:
+                key = "strong_ask"
+
+            imbalance_buckets[key]["count"] += 1
+            imbalance_buckets[key]["total_pnl"] += pnl
+            if pnl > 0:
+                imbalance_buckets[key]["wins"] += 1
+
+        if not has_data:
+            return {}
+
+        wc = winners["count"]
+        lc = losers["count"]
+
+        bucket_result = {}
+        for key in ["strong_bid", "slight_bid", "slight_ask", "strong_ask"]:
+            if key in imbalance_buckets:
+                b = imbalance_buckets[key]
+                c = b["count"]
+                bucket_result[key] = {
+                    "count": c,
+                    "win_rate": round(b["wins"] / c, 4) if c else 0,
+                    "avg_pnl": round(b["total_pnl"] / c, 4) if c else 0,
+                }
+
+        # Compute correlation between entry imbalance and PnL
+        imbalances = []
+        pnls = []
+        for t in trades:
+            ld = t["log_data"]
+            obi = ld.get("orderbook_imbalance_entry")
+            if obi:
+                imbalances.append(obi.get("imbalance", 0) or 0)
+                pnls.append(t["trade"].pnl or 0)
+
+        imbalance_pnl_corr = self._pearson(imbalances, pnls)
+
+        return {
+            "winners": {
+                "count": wc,
+                "avg_imbalance_at_entry": round(winners["total_imbalance"] / wc, 4) if wc else 0,
+                "avg_spread_at_entry": round(winners["total_spread"] / wc, 4) if wc else 0,
+            },
+            "losers": {
+                "count": lc,
+                "avg_imbalance_at_entry": round(losers["total_imbalance"] / lc, 4) if lc else 0,
+                "avg_spread_at_entry": round(losers["total_spread"] / lc, 4) if lc else 0,
+            },
+            "by_imbalance_direction": bucket_result,
+            "imbalance_vs_pnl_correlation": round(imbalance_pnl_corr, 4) if imbalance_pnl_corr is not None else None,
+        }
 
     # ------------------------------------------------------------------
     # Helpers
