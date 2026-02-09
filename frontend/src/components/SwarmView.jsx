@@ -27,13 +27,31 @@ export default function SwarmView({ swarmState, onSelectBot }) {
     return () => clearInterval(interval)
   }, [fetchBots])
 
+  const copyToClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // Fallback for browsers that revoke clipboard permission after async gap
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return ok
+    }
+  }
+
   const handleCopyForAI = async () => {
     setCopyStatus('loading')
     try {
       const data = await get('/api/swarm/export-latest-sessions')
       if (data && data.export_text) {
-        await navigator.clipboard.writeText(data.export_text)
-        setCopyStatus('success')
+        const ok = await copyToClipboard(data.export_text)
+        setCopyStatus(ok ? 'success' : 'error')
         setTimeout(() => setCopyStatus('idle'), 2000)
       } else {
         setCopyStatus('error')
