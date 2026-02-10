@@ -18,7 +18,6 @@ confidence gate: low VROC during a breakout signal suggests a fakeout.
 """
 
 import logging
-from datetime import timezone
 
 import numpy as np
 import pandas as pd
