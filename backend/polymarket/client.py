@@ -8,7 +8,10 @@ from typing import Optional
 
 import httpx
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BookParams
+from py_clob_client.clob_types import (
+    OrderArgs, MarketOrderArgs, OrderType, BookParams,
+    BalanceAllowanceParams, AssetType,
+)
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from config import (
@@ -55,6 +58,14 @@ class PolymarketClient:
             funder=POLYMARKET_PROXY_ADDRESS,
         )
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
+
+        # Set USDC allowance for the CTF Exchange contract so orders
+        # are not rejected with "not enough balance / allowance".
+        self._client.update_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        logger.info("USDC allowance set for CTF Exchange")
+
         self._authenticated = True
         logger.info("Polymarket client initialized (authenticated)")
 
