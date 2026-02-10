@@ -519,6 +519,10 @@ class TradingEngine:
                 "layer1_weight": config.signal.layer1_weight,
                 "layer2_weight": config.signal.layer2_weight,
                 "buy_threshold": config.signal.buy_threshold,
+                "vwap_enabled": config.signal.vwap_enabled,
+                "vwap_weight": config.signal.vwap_weight,
+                "vroc_enabled": config.signal.vroc_enabled,
+                "vroc_threshold": config.signal.vroc_threshold,
             },
             "risk": {
                 "max_position_size": config.risk.max_position_size,

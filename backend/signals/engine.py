@@ -14,6 +14,7 @@ from models import CompositeSignal, Layer1Signal, Layer2Signal, Side, MarketInfo
 from config import config_manager
 from signals.polymarket_ta import compute_layer1_signal
 from signals.btc_ta import compute_layer2_signal
+from signals.vwap_vroc import compute_vwap, compute_vroc
 from polymarket.client import polymarket_client
 from binance.client import binance_client
 
@@ -54,11 +55,26 @@ class SignalEngine:
         # --- Layer 1: Polymarket Token TA ---
         layer1 = self._compute_layer1(market, config)
 
+        # --- Fetch BTC candles once (reused by Layer 2, VWAP, VROC) ---
+        candles = self._fetch_candles()
+
         # --- Layer 2: BTC Multi-TF EMAs ---
-        layer2 = self._compute_layer2(config)
+        layer2 = self._compute_layer2(config, candles)
+
+        # --- VWAP: always computed for data collection ---
+        vwap_data = compute_vwap(
+            candles.get("1m"),
+            session_reset_hour_utc=config.vwap_session_reset_hour_utc,
+        )
+
+        # --- VROC: always computed for data collection ---
+        vroc_data = compute_vroc(
+            candles.get("15m"),
+            lookback=config.vroc_lookback,
+        )
 
         # --- Combine ---
-        composite = self._combine_signals(layer1, layer2, config)
+        composite = self._combine_signals(layer1, layer2, config, vwap_data, vroc_data)
 
         self._last_signal = composite
 
@@ -66,10 +82,13 @@ class SignalEngine:
         l1_rsi = layer1.rsi if layer1.rsi is not None else 50.0
         l1_macd = layer1.macd if layer1.macd is not None else 0.0
         l1_hist = layer1.macd_histogram if layer1.macd_histogram is not None else 0.0
-        
+
         comp_conf = getattr(composite, 'composite_confidence', 0.0)
-        # Ensure comp_conf is a float even if getattr returns None (though model defines it as float)
         comp_conf = comp_conf if comp_conf is not None else 0.0
+
+        vwap_str = f"{vwap_data['vwap']:.2f}" if vwap_data.get("vwap") else "N/A"
+        vwap_tag = "ON" if config.vwap_enabled else "off"
+        vroc_tag = "ON" if config.vroc_enabled else "off"
 
         logger.info(
             f"SIGNAL ANALYSIS:\n"
@@ -77,6 +96,8 @@ class SignalEngine:
             f"    - RSI: {l1_rsi:.1f} | MACD: {l1_macd:.4f} | Hist: {l1_hist:.4f}\n"
             f"  Layer 2 (Bitcoin):    {layer2.direction:+.3f} (Conf: {layer2.confidence:.2f})\n"
             f"    - Alignment: {layer2.alignment_count}/{layer2.total_timeframes}\n"
+            f"  VWAP [{vwap_tag}]: {vwap_str} | signal={vwap_data['signal']:+.3f} | z={vwap_data['band_position']:+.2f}\n"
+            f"  VROC [{vroc_tag}]: {vroc_data['vroc']:+.1f}% | confirmed={composite.vroc_confirmed}\n"
             f"  COMPOSITE: {composite.composite_score:+.3f} (Conf: {comp_conf:.2f})\n"
             f"  ACTION: {'TRADE ' + composite.recommended_side.value.upper() if composite.should_trade else 'NO TRADE'}"
         )
@@ -104,11 +125,17 @@ class SignalEngine:
             logger.error(f"Layer 1 computation error: {e}")
             return Layer1Signal()
 
-    def _compute_layer2(self, config) -> Layer2Signal:
-        """Fetch BTC candles and compute Layer 2."""
+    def _fetch_candles(self) -> dict:
+        """Fetch BTC candles once for reuse across Layer 2, VWAP, and VROC."""
         try:
-            candles = self._btc_client.fetch_all_timeframes()
+            return self._btc_client.fetch_all_timeframes()
+        except Exception as e:
+            logger.error(f"Error fetching BTC candles: {e}")
+            return {}
 
+    def _compute_layer2(self, config, candles: dict) -> Layer2Signal:
+        """Compute Layer 2 from pre-fetched BTC candles."""
+        try:
             if candles:
                 return compute_layer2_signal(candles, config)
             else:
@@ -124,25 +151,39 @@ class SignalEngine:
         layer1: Layer1Signal,
         layer2: Layer2Signal,
         config,
+        vwap_data: dict,
+        vroc_data: dict,
     ) -> CompositeSignal:
         """
         Combine both layers into a composite signal.
-        
+
         KEY DESIGN: Use direction scores DIRECTLY with weights.
-        Don't multiply direction × confidence — that double-penalizes 
+        Don't multiply direction x confidence — that double-penalizes
         weak-but-valid signals. Confidence is used as a GATE, not a multiplier.
+
+        VWAP (when enabled): blended into composite score as a third directional
+        component.  Weights (L1 + L2 + VWAP) are normalised to 1.0.
+
+        VROC (when enabled): acts as a confidence gate.  If the current candle's
+        volume rate of change is below the threshold, composite confidence is
+        penalised, making it harder to pass the min_signal_confidence gate.
         """
 
         l1_weight = config.layer1_weight
         l2_weight = config.layer2_weight
 
-        # Normalize weights
-        total_weight = l1_weight + l2_weight
+        # ─── VWAP: optional third directional component ───
+        vwap_signal = vwap_data.get("signal", 0.0)
+        vwap_weight = config.vwap_weight if config.vwap_enabled else 0.0
+
+        # Normalize weights (L1 + L2 + optional VWAP)
+        total_weight = l1_weight + l2_weight + vwap_weight
         if total_weight > 0:
             l1_weight /= total_weight
             l2_weight /= total_weight
+            vwap_weight /= total_weight
 
-        # If both layers have no data at all, bail
+        # If both core layers have no data at all, bail
         if layer1.confidence == 0 and layer2.confidence == 0:
             return CompositeSignal(
                 layer1=layer1,
@@ -151,33 +192,67 @@ class SignalEngine:
                 composite_confidence=0.0,
                 should_trade=False,
                 timestamp=datetime.now(timezone.utc),
+                vwap_enabled=config.vwap_enabled,
+                vwap_value=vwap_data.get("vwap"),
+                vwap_signal=vwap_signal,
+                vwap_band_position=vwap_data.get("band_position", 0.0),
+                vroc_enabled=config.vroc_enabled,
+                vroc_value=vroc_data.get("vroc", 0.0),
+                vroc_confirmed=True,
             )
 
-        # If one layer has zero confidence, rely entirely on the other
+        # If one core layer has zero confidence, redistribute its weight
         if layer1.confidence == 0:
+            remaining = l1_weight
             l1_weight = 0
-            l2_weight = 1.0
+            # Redistribute proportionally to L2 and VWAP
+            if l2_weight + vwap_weight > 0:
+                ratio = remaining / (l2_weight + vwap_weight)
+                l2_weight += l2_weight * ratio
+                vwap_weight += vwap_weight * ratio
+            else:
+                l2_weight = 1.0
         elif layer2.confidence == 0:
-            l1_weight = 1.0
+            remaining = l2_weight
             l2_weight = 0
+            if l1_weight + vwap_weight > 0:
+                ratio = remaining / (l1_weight + vwap_weight)
+                l1_weight += l1_weight * ratio
+                vwap_weight += vwap_weight * ratio
+            else:
+                l1_weight = 1.0
 
         # ─── Composite score: weighted average of DIRECTIONS ───
-        # This preserves the actual signal strength
         composite_score = (
             l1_weight * layer1.direction
             + l2_weight * layer2.direction
+            + vwap_weight * vwap_signal
         )
 
-        # ─── Composite confidence: weighted average ───
-        composite_confidence = (
-            l1_weight * layer1.confidence + l2_weight * layer2.confidence
-        )
-        
-        # Bonus: if both layers agree on direction, boost confidence
+        # ─── Composite confidence: weighted average (core layers only) ───
+        # VWAP doesn't have its own "confidence" — it's always available when
+        # candle data is present, so it only contributes to direction.
+        core_weight = l1_weight + l2_weight
+        if core_weight > 0:
+            composite_confidence = (
+                l1_weight * layer1.confidence + l2_weight * layer2.confidence
+            ) / core_weight
+        else:
+            composite_confidence = 0.0
+
+        # Bonus: if both core layers agree on direction, boost confidence
         if layer1.direction != 0 and layer2.direction != 0:
             same_direction = (layer1.direction > 0) == (layer2.direction > 0)
             if same_direction:
                 composite_confidence = min(1.0, composite_confidence * 1.4)
+
+        # ─── VROC: confidence gate (when enabled) ───
+        vroc_pct = vroc_data.get("vroc", 0.0)
+        vroc_confirmed = vroc_pct >= config.vroc_threshold
+
+        if config.vroc_enabled and not vroc_confirmed:
+            # Volume doesn't confirm the move — penalise confidence
+            composite_confidence *= config.vroc_confidence_penalty
 
         # Determine direction and whether to trade
         recommended_side = None
@@ -202,6 +277,15 @@ class SignalEngine:
             recommended_side=recommended_side,
             should_trade=should_trade,
             timestamp=datetime.now(timezone.utc),
+            # VWAP data (always populated for data collection)
+            vwap_enabled=config.vwap_enabled,
+            vwap_value=vwap_data.get("vwap"),
+            vwap_signal=vwap_signal,
+            vwap_band_position=vwap_data.get("band_position", 0.0),
+            # VROC data (always populated for data collection)
+            vroc_enabled=config.vroc_enabled,
+            vroc_value=vroc_pct,
+            vroc_confirmed=vroc_confirmed,
         )
 
 

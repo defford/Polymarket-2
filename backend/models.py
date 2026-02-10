@@ -100,6 +100,17 @@ class CompositeSignal(BaseModel):
     should_trade: bool = False
     timestamp: datetime = None
 
+    # VWAP metrics (always computed for data collection)
+    vwap_enabled: bool = False              # whether VWAP influenced this signal
+    vwap_value: Optional[float] = None      # VWAP price level
+    vwap_signal: float = 0.0                # directional signal -1 to +1
+    vwap_band_position: float = 0.0         # z-score (std devs from VWAP)
+
+    # VROC metrics (always computed for data collection)
+    vroc_enabled: bool = False              # whether VROC influenced this signal
+    vroc_value: float = 0.0                 # VROC percentage
+    vroc_confirmed: bool = True             # True if VROC >= threshold (or disabled)
+
 
 # --- Trade Models ---
 

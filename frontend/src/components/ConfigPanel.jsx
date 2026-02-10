@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings, Sliders, Shield, Zap, Save, RotateCcw, AlertTriangle } from 'lucide-react'
+import { Settings, Sliders, Shield, Zap, Save, RotateCcw, AlertTriangle, FlaskConical } from 'lucide-react'
 
 function Section({ icon: Icon, title, description, children, color = 'text-text-dim' }) {
   return (
@@ -271,6 +271,81 @@ export default function ConfigPanel({ config, onUpdate }) {
                   min={3} max={15} step={1} onChange={(v) => update('signal', 'pm_macd_signal', v)} />
                 <NumberParam label="Momentum Lookback" value={sig.pm_momentum_lookback ?? 5}
                   min={2} max={15} step={1} onChange={(v) => update('signal', 'pm_momentum_lookback', v)} />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Experimental Indicators (VWAP & VROC) */}
+        <Section
+          icon={FlaskConical}
+          title="Experimental Indicators"
+          description="Toggle VWAP and VROC on/off for A/B testing. Values are always computed and logged regardless of toggle state."
+          color="text-accent-purple"
+        >
+          <div className="space-y-5">
+            {/* VWAP */}
+            <div className="pb-3 border-b border-surface-2">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider">
+                  VWAP (Fair Value)
+                </p>
+                <ToggleParam
+                  label=""
+                  value={sig.vwap_enabled ?? false}
+                  onChange={(v) => update('signal', 'vwap_enabled', v)}
+                  color="bg-accent-purple"
+                />
+              </div>
+              <p className="text-2xs text-text-dim mb-3">
+                Volume Weighted Average Price. When enabled, blends a directional signal into the composite score based on where BTC price sits relative to the session VWAP.
+              </p>
+              <div className={`space-y-3 transition-opacity ${sig.vwap_enabled ? 'opacity-100' : 'opacity-40'}`}>
+                <SliderParam
+                  label="VWAP Weight"
+                  value={sig.vwap_weight ?? 0.15}
+                  min={0.05} max={0.5} step={0.05}
+                  description="Blending weight (L1 + L2 + VWAP normalize to 1.0)"
+                  onChange={(v) => update('signal', 'vwap_weight', v)}
+                />
+                <NumberParam label="Session Reset Hour (UTC)" value={sig.vwap_session_reset_hour_utc ?? 0}
+                  min={0} max={23} step={1} onChange={(v) => update('signal', 'vwap_session_reset_hour_utc', v)} />
+              </div>
+            </div>
+
+            {/* VROC */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider">
+                  VROC (Volume Gate)
+                </p>
+                <ToggleParam
+                  label=""
+                  value={sig.vroc_enabled ?? false}
+                  onChange={(v) => update('signal', 'vroc_enabled', v)}
+                  color="bg-accent-purple"
+                />
+              </div>
+              <p className="text-2xs text-text-dim mb-3">
+                Volume Rate of Change. When enabled, penalises signal confidence if the current candle's volume is below the threshold vs. recent average. Filters out low-volume fakeouts.
+              </p>
+              <div className={`space-y-3 transition-opacity ${sig.vroc_enabled ? 'opacity-100' : 'opacity-40'}`}>
+                <NumberParam label="Lookback Candles (15m)" value={sig.vroc_lookback ?? 10}
+                  min={3} max={30} step={1} onChange={(v) => update('signal', 'vroc_lookback', v)} />
+                <SliderParam
+                  label="VROC Threshold"
+                  value={sig.vroc_threshold ?? 50}
+                  min={10} max={200} step={5} unit="%"
+                  description="Minimum VROC% to confirm breakout volume"
+                  onChange={(v) => update('signal', 'vroc_threshold', v)}
+                />
+                <SliderParam
+                  label="Confidence Penalty"
+                  value={sig.vroc_confidence_penalty ?? 0.5}
+                  min={0.1} max={1.0} step={0.05}
+                  description="Multiply confidence by this when VROC is below threshold"
+                  onChange={(v) => update('signal', 'vroc_confidence_penalty', v)}
+                />
               </div>
             </div>
           </div>
