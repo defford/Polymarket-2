@@ -108,7 +108,7 @@ def evaluate_exit(
     Returns:
         Decision dict with keys:
             reason: Full human-readable reason string
-            reason_category: "trailing_stop" | "hard_stop" | "signal_reversal"
+            reason_category: "trailing_stop" | "hard_take_profit" | "hard_stop" | "signal_reversal"
             effective_trailing_pct: The final trailing stop % used
             pressure_multiplier: BTC pressure multiplier applied
             time_zone: "normal" | "TIGHT" | "FINAL"
@@ -161,6 +161,12 @@ def evaluate_exit(
     # --- Apply pressure multiplier to trailing stop ---
     effective_trailing = base_trailing * pressure_multiplier
 
+    # --- Scaling Take Profit: tighten trailing stop based on unrealized gain ---
+    if exit_config.scaling_tp_enabled and position.entry_price > 0 and position.current_price > position.entry_price:
+        gain_pct = (position.current_price - position.entry_price) / position.entry_price
+        stop_reduction = exit_config.scaling_tp_pct * gain_pct
+        effective_trailing = effective_trailing * (1.0 - stop_reduction)
+        effective_trailing = max(effective_trailing, exit_config.scaling_tp_min_trail)
 
     pressure_val = pressure.get("pressure", 0.0)
     momentum_val = pressure.get("momentum", 0.0)
@@ -204,6 +210,19 @@ def evaluate_exit(
             )
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "trailing_stop"}
+
+    # --- Check 1.5: Hard Take Profit ---
+    if exit_config.hard_tp_enabled and position.entry_price > 0 and position.current_price > 0:
+        gain_from_entry = (position.current_price - position.entry_price) / position.entry_price
+        if gain_from_entry >= exit_config.hard_tp_pct:
+            reason = (
+                f"hard_take_profit: price {position.current_price:.3f} rose "
+                f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
+                f"(hard TP limit: {exit_config.hard_tp_pct:.0%}) | "
+                f"BTC pressure={pressure_val:+.2f} [{time_zone_label}]"
+            )
+            logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
+            return {**base_decision, "reason": reason, "reason_category": "hard_take_profit"}
 
     # --- Check 2: Hard floor stop (NOT pressure-adjusted -- absolute safety net) ---
     if position.current_price > 0 and position.entry_price > 0:

@@ -414,6 +414,7 @@ function ExitDetailsSection({ logData, trade }) {
     market_close: { badge: 'badge-green', label: 'Market Close', color: 'text-accent-green' },
     trailing_stop: { badge: 'badge-yellow', label: 'Trailing Stop', color: 'text-accent-yellow' },
     hard_stop: { badge: 'badge-red', label: 'Hard Stop', color: 'text-accent-red' },
+    hard_take_profit: { badge: 'badge-green', label: 'Take Profit', color: 'text-accent-green' },
     signal_reversal: { badge: 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20 px-2.5 py-1 rounded-full text-2xs font-mono font-medium inline-flex items-center gap-1', label: 'Signal Reversal', color: 'text-accent-cyan' },
   }
   const rc = reasonColors[exitReason] || { badge: 'badge-muted', label: exitReason, color: 'text-text-dim' }

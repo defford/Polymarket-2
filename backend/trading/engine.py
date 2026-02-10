@@ -345,6 +345,13 @@ class TradingEngine:
                             base_trailing = exit_config.tightened_trailing_pct
                             time_zone = "TIGHT"
 
+                    # --- Scaling Take Profit: tighten trailing stop based on unrealized gain ---
+                    if exit_config.scaling_tp_enabled and position.entry_price > 0 and position.current_price > position.entry_price:
+                        gain_pct = (position.current_price - position.entry_price) / position.entry_price
+                        stop_reduction = exit_config.scaling_tp_pct * gain_pct
+                        base_trailing = base_trailing * (1.0 - stop_reduction)
+                        base_trailing = max(base_trailing, exit_config.scaling_tp_min_trail)
+
                     # --- Trailing stop (no BTC pressure — slow loop handles that) ---
                     if position.peak_price > 0 and position.current_price > 0:
                         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
@@ -370,6 +377,20 @@ class TradingEngine:
                             )
                             logger.info(f"🛑 FAST EXIT -- {reason}")
                             await self._execute_exit(condition_id, reason, "hard_stop")
+                            exited = True
+                            break
+
+                    # --- Hard Take Profit (absolute profit ceiling) ---
+                    if exit_config.hard_tp_enabled and position.entry_price > 0 and position.current_price > 0:
+                        gain_from_entry = (position.current_price - position.entry_price) / position.entry_price
+                        if gain_from_entry >= exit_config.hard_tp_pct:
+                            reason = (
+                                f"hard_take_profit: price {position.current_price:.3f} rose "
+                                f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
+                                f"(hard TP limit: {exit_config.hard_tp_pct:.0%}) (WS fast-check)"
+                            )
+                            logger.info(f"🎯 FAST EXIT -- {reason}")
+                            await self._execute_exit(condition_id, reason, "hard_take_profit")
                             exited = True
                             break
 

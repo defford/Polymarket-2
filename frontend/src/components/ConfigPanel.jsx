@@ -402,7 +402,56 @@ export default function ConfigPanel({ config, onUpdate }) {
                     min={0.05} max={0.5} step={0.01}
                     onChange={(v) => update('exit', 'signal_reversal_threshold', v)}
                   />
-                  
+
+                  <div className="pt-2 border-t border-surface-2">
+                    <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                      Take Profit
+                    </p>
+                    <div className="space-y-3">
+                      <ToggleParam
+                        label="Hard Take Profit"
+                        value={local.exit?.hard_tp_enabled ?? false}
+                        onChange={(v) => update('exit', 'hard_tp_enabled', v)}
+                        color="bg-accent-green"
+                      />
+                      {local.exit?.hard_tp_enabled && (
+                        <div className="ml-2 animate-fade-in">
+                          <SliderParam
+                            label="Take Profit %"
+                            value={local.exit?.hard_tp_pct ?? 0.10}
+                            min={0.02} max={0.50} step={0.01}
+                            description="Exit when price rises this % from entry"
+                            onChange={(v) => update('exit', 'hard_tp_pct', v)}
+                          />
+                        </div>
+                      )}
+                      <ToggleParam
+                        label="Scaling Take Profit"
+                        value={local.exit?.scaling_tp_enabled ?? false}
+                        onChange={(v) => update('exit', 'scaling_tp_enabled', v)}
+                        color="bg-accent-green"
+                      />
+                      {local.exit?.scaling_tp_enabled && (
+                        <div className="ml-2 space-y-3 animate-fade-in">
+                          <SliderParam
+                            label="Scaling Factor"
+                            value={local.exit?.scaling_tp_pct ?? 0.50}
+                            min={0.10} max={1.00} step={0.05}
+                            description="Fraction of unrealized gain used to tighten trailing stop"
+                            onChange={(v) => update('exit', 'scaling_tp_pct', v)}
+                          />
+                          <SliderParam
+                            label="Min Trailing Stop Floor"
+                            value={local.exit?.scaling_tp_min_trail ?? 0.02}
+                            min={0.005} max={0.10} step={0.005}
+                            description="Trailing stop can never go below this %"
+                            onChange={(v) => update('exit', 'scaling_tp_min_trail', v)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="pt-2 border-t border-surface-2">
                     <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
                       Time Decay

@@ -92,6 +92,13 @@ class ExitConfig:
     pressure_tighten_min: float = 0.4       # min multiplier when BTC is against position
     pressure_neutral_zone: float = 0.15     # pressure below this = no adjustment
 
+    # Take Profit
+    hard_tp_enabled: bool = False            # master switch for hard take-profit
+    hard_tp_pct: float = 0.10               # exit when price rises 10% from entry
+    scaling_tp_enabled: bool = False          # master switch for scaling take-profit
+    scaling_tp_pct: float = 0.50             # fraction of gain used to tighten trailing stop
+    scaling_tp_min_trail: float = 0.02       # floor: trailing stop can never go below 2%
+
 
 @dataclass
 class TradingConfig:
