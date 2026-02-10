@@ -48,6 +48,7 @@ class OrderManager:
         signal_score: float = 0.0,
         buy_state_snapshot: Optional[MarketStateSnapshot] = None,
         session_id: Optional[int] = None,
+        max_retries: int = 5,
     ) -> Optional[Trade]:
         """
         Place an order on the active market.
@@ -60,6 +61,7 @@ class OrderManager:
             price_offset: Offset from best price for limit orders
             is_dry_run: If True, don't actually place the order
             signal_score: The signal strength that triggered this trade
+            max_retries: Number of seconds to wait for a fill (1 retry/sec)
 
         Returns:
             Trade object if successful, None otherwise
@@ -212,8 +214,7 @@ class OrderManager:
                 fill_retries = 0
                 fill_status = "unknown"
                 try:
-                    # Poll for fill for up to 5 seconds (non-blocking)
-                    max_retries = 5
+                    # Poll for fill for up to max_retries seconds (non-blocking)
                     filled = False
 
                     for i in range(max_retries):

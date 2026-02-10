@@ -804,6 +804,7 @@ class TradingEngine:
                 signal_score=signal.composite_score,
                 buy_state_snapshot=buy_state_snapshot,
                 session_id=self._current_session_id,
+                max_retries=config.trading.max_order_retries,
             )
 
         if trade:

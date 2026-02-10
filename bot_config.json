@@ -75,7 +75,8 @@
     "use_fok_for_strong_signals": false,
     "strong_signal_threshold": 0.8,
     "poll_interval_seconds": 10,
-    "market_discovery_interval_seconds": 30
+    "market_discovery_interval_seconds": 30,
+    "max_order_retries": 30
   },
   "mode": "dry_run"
 }

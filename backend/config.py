@@ -121,6 +121,7 @@ class TradingConfig:
     strong_signal_threshold: float = 0.8  # when to use FOK
     poll_interval_seconds: int = 10  # how often to check signals
     market_discovery_interval_seconds: int = 30  # how often to scan for new markets
+    max_order_retries: int = 30  # how many seconds to wait for a fill before cancelling
 
 
 @dataclass
