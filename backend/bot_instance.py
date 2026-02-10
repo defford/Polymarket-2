@@ -3,8 +3,8 @@ BotInstance and BotConfigManager.
 
 Each BotInstance encapsulates all per-bot state: its own engine,
 signal engine, risk manager, order manager, market discovery,
-and market stream.  Shared read-only clients (Polymarket, Binance)
-are injected by the SwarmManager.
+and market stream.  Per-bot PolymarketClient instances and a shared
+read-only BinanceClient are injected by the SwarmManager.
 """
 
 import json
@@ -63,7 +63,7 @@ class BotInstance:
         # Per-bot config manager (in-memory, DB-persisted)
         self.config_manager = BotConfigManager(config)
 
-        # Shared clients (set by SwarmManager)
+        # Injected clients (PolymarketClient is per-bot; BinanceClient is shared read-only)
         self._polymarket_client = polymarket_client
         self._binance_client = binance_client
 

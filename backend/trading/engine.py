@@ -132,9 +132,11 @@ class TradingEngine:
                 self._status = BotStatus.RUNNING
             except Exception as e:
                 logger.error(f"Failed to init authenticated client: {e}")
-                logger.info("Falling back to dry-run mode")
-                self._polymarket.init_read_only()
-                self._status = BotStatus.DRY_RUN
+                self._status = BotStatus.ERROR
+                raise RuntimeError(
+                    f"Bot cannot start in live mode: {e}. "
+                    f"Check POLYMARKET_PRIVATE_KEY and POLYMARKET_PROXY_ADDRESS in .env."
+                ) from e
         else:
             self._polymarket.init_read_only()
             self._status = BotStatus.DRY_RUN

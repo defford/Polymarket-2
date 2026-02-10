@@ -258,6 +258,8 @@ async def start_swarm_bot(bot_id: int):
         await swarm_manager.start_bot(bot_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     instance = swarm_manager.get_bot(bot_id)
     return {"message": "Bot started", "status": instance.status}
 
@@ -919,7 +921,10 @@ async def start_bot():
         raise HTTPException(status_code=404, detail="No bot available")
     if instance.is_running:
         return {"message": "Bot is already running", "status": instance.status}
-    await instance.start()
+    try:
+        await instance.start()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"message": "Bot started", "status": instance.status}
 
 

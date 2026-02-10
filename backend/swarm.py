@@ -13,7 +13,7 @@ from typing import Optional
 from config import BotConfig, ConfigManager
 from models import BotRecord
 from bot_instance import BotInstance
-from polymarket.client import polymarket_client
+from polymarket.client import PolymarketClient
 from binance.client import binance_client
 import database as db
 
@@ -76,12 +76,16 @@ class SwarmManager:
     def _create_instance(
         self, bot_id: int, name: str, config: BotConfig, description: str = "",
     ) -> BotInstance:
+        # Each bot gets its own PolymarketClient to prevent
+        # auth state clobbering when bots run in different modes.
+        bot_pm_client = PolymarketClient()
+
         instance = BotInstance(
             bot_id=bot_id,
             name=name,
             config=config,
             description=description,
-            polymarket_client=polymarket_client,
+            polymarket_client=bot_pm_client,
             binance_client=binance_client,
         )
         if self._ws_broadcast_fn:
@@ -171,7 +175,15 @@ class SwarmManager:
         instance = self._bots.get(bot_id)
         if not instance:
             raise ValueError(f"Bot {bot_id} not found")
-        await instance.start()
+        try:
+            await instance.start()
+        except RuntimeError:
+            db.update_bot(
+                bot_id,
+                status="error",
+                updated_at=datetime.now(timezone.utc),
+            )
+            raise
         db.update_bot(
             bot_id,
             status=instance.status,
