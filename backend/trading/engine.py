@@ -18,7 +18,7 @@ from typing import Optional
 from config import config_manager
 from models import (
     BotStatus, BotState, CompositeSignal, MarketInfo, Side,
-    MarketStateSnapshot, Session,
+    MarketStateSnapshot, Session, OrderStatus,
 )
 from polymarket.client import polymarket_client
 from polymarket.markets import market_discovery
