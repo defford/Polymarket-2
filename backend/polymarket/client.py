@@ -61,10 +61,32 @@ class PolymarketClient:
 
         # Set USDC allowance for the CTF Exchange contract so orders
         # are not rejected with "not enough balance / allowance".
-        self._client.update_balance_allowance(
-            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-        )
-        logger.info("USDC allowance set for CTF Exchange")
+        try:
+            resp = self._client.update_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            logger.info(f"USDC allowance update response: {resp}")
+        except Exception as e:
+            logger.warning(f"Failed to update allowance: {e}")
+
+        # Verify actual balance and allowance
+        try:
+            ba = self._client.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            bal = float(ba.get("balance", 0))
+            allow = float(ba.get("allowance", 0))
+            
+            target_address = POLYMARKET_PROXY_ADDRESS if POLYMARKET_PROXY_ADDRESS else "Signer (EOA)"
+            logger.info(f"💰 Account State [{target_address}] -- Balance: ${bal:.2f} | Allowance: ${allow:.2f}")
+
+            if bal < 5.0:
+                logger.warning(f"⚠️ Low balance on {target_address}! If you deposited to your private key address, move funds to the Proxy.")
+            if allow < 100.0:
+                logger.warning("⚠️ Low allowance! Orders may fail.")
+                
+        except Exception as e:
+            logger.error(f"Could not verify balance/allowance: {e}")
 
         self._authenticated = True
         logger.info("Polymarket client initialized (authenticated)")

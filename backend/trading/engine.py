@@ -808,13 +808,18 @@ class TradingEngine:
             )
 
         if trade:
-            logger.info(
-                f"{'🧪' if is_dry_run else '✅'} "
-                f"{'DRY RUN' if is_dry_run else 'LIVE'}: "
-                f"{signal.recommended_side.value.upper()} "
-                f"${position_size:.2f} @ {trade.price:.3f} "
-                f"(signal={signal.composite_score:+.3f})"
-            )
+            if trade.status == OrderStatus.REJECTED:
+                logger.warning(f"🚫 Trade Rejected: {trade.notes}")
+            elif trade.status == OrderStatus.CANCELLED:
+                logger.warning(f"🚫 Trade Cancelled: {trade.notes}")
+            else:
+                logger.info(
+                    f"{'🧪' if is_dry_run else '✅'} "
+                    f"{'DRY RUN' if is_dry_run else 'LIVE'}: "
+                    f"{signal.recommended_side.value.upper()} "
+                    f"${position_size:.2f} @ {trade.price:.3f} "
+                    f"(signal={signal.composite_score:+.3f})"
+                )
 
     async def _broadcast_state(self, market: MarketInfo, signal: CompositeSignal):
         """Broadcast current state to WebSocket clients."""
