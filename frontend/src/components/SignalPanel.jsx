@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowDown, Minus, Layers, BarChart2, TrendingUp } from 'lucide-react'
+import { ArrowUp, ArrowDown, Minus, Layers, BarChart2, TrendingUp, FlaskConical } from 'lucide-react'
 
 function SignalBar({ value, label, maxLabel }) {
   // value from -1 to +1
@@ -186,6 +186,72 @@ export default function SignalPanel({ signal }) {
             </div>
           </div>
         </div>
+
+        {/* VWAP & VROC — Experimental Indicators */}
+        {(signal.vwap_value != null || signal.vroc_value != null) && (
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <FlaskConical className="w-3.5 h-3.5 text-accent-purple" />
+              <span className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider">
+                Experimental
+              </span>
+            </div>
+            <div className="space-y-2 pl-1">
+              {/* VWAP row */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className={`rounded p-2 ${signal.vwap_enabled ? 'bg-accent-purple/10 border border-accent-purple/20' : 'bg-surface-2'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-2xs text-text-dim">VWAP</p>
+                    <span className={`text-2xs font-mono ${signal.vwap_enabled ? 'text-accent-purple' : 'text-text-dim'}`}>
+                      {signal.vwap_enabled ? 'ON' : 'off'}
+                    </span>
+                  </div>
+                  <p className="font-mono text-sm font-medium tabular-nums text-text-primary">
+                    {signal.vwap_value != null ? `$${signal.vwap_value.toFixed(0)}` : '—'}
+                  </p>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-2xs text-text-dim">Signal</span>
+                    <span className={`text-2xs font-mono tabular-nums ${
+                      (signal.vwap_signal || 0) > 0.05 ? 'text-accent-green' :
+                      (signal.vwap_signal || 0) < -0.05 ? 'text-accent-red' : 'text-text-dim'
+                    }`}>
+                      {(signal.vwap_signal || 0) > 0 ? '+' : ''}{(signal.vwap_signal || 0).toFixed(3)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-0.5">
+                    <span className="text-2xs text-text-dim">Z-score</span>
+                    <span className="text-2xs font-mono tabular-nums text-text-secondary">
+                      {(signal.vwap_band_position || 0).toFixed(2)}σ
+                    </span>
+                  </div>
+                </div>
+
+                {/* VROC row */}
+                <div className={`rounded p-2 ${signal.vroc_enabled ? 'bg-accent-purple/10 border border-accent-purple/20' : 'bg-surface-2'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-2xs text-text-dim">VROC</p>
+                    <span className={`text-2xs font-mono ${signal.vroc_enabled ? 'text-accent-purple' : 'text-text-dim'}`}>
+                      {signal.vroc_enabled ? 'ON' : 'off'}
+                    </span>
+                  </div>
+                  <p className={`font-mono text-sm font-medium tabular-nums ${
+                    signal.vroc_confirmed ? 'text-accent-green' : signal.vroc_enabled ? 'text-accent-red' : 'text-text-primary'
+                  }`}>
+                    {(signal.vroc_value || 0).toFixed(1)}%
+                  </p>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-2xs text-text-dim">Status</span>
+                    <span className={`text-2xs font-mono ${
+                      signal.vroc_confirmed ? 'text-accent-green' : 'text-accent-red'
+                    }`}>
+                      {signal.vroc_confirmed ? 'Confirmed' : 'Low Vol'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

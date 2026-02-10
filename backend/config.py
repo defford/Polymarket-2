@@ -57,6 +57,17 @@ class SignalConfig:
     layer2_weight: float = 0.6
     buy_threshold: float = 0.08  # composite score must exceed this to trade
 
+    # VWAP (Volume Weighted Average Price) — toggle for A/B testing
+    vwap_enabled: bool = False          # when ON, blends VWAP direction into composite score
+    vwap_weight: float = 0.15           # weight when enabled (L1+L2+VWAP normalize to 1.0)
+    vwap_session_reset_hour_utc: int = 0  # hour (0-23) to reset the VWAP session
+
+    # VROC (Volume Rate of Change) — toggle for A/B testing
+    vroc_enabled: bool = False           # when ON, gates trades by volume confirmation
+    vroc_lookback: int = 10              # number of 15m candles for the rolling average
+    vroc_threshold: float = 50.0         # minimum VROC% to confirm breakout volume
+    vroc_confidence_penalty: float = 0.5 # multiply confidence by this when VROC is below threshold
+
 
 @dataclass
 class RiskConfig:
