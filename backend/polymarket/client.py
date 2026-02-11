@@ -55,7 +55,7 @@ class PolymarketClient:
             key=POLYMARKET_PRIVATE_KEY,
             chain_id=CHAIN_ID,
             signature_type=1,  # Magic/email wallet
-            funder=POLYMARKET_PROXY_ADDRESS,
+            funder=POLYMARKET_PROXY_ADDRESS if POLYMARKET_PROXY_ADDRESS else None,
         )
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
 
@@ -222,6 +222,18 @@ class PolymarketClient:
             return resp
         except Exception as e:
             logger.error(f"Error placing limit order: {e}")
+            
+            # Diagnostic: Check balance/allowance on failure
+            try:
+                ba = self._client.get_balance_allowance(
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                )
+                bal = float(ba.get("balance", 0))
+                allow = float(ba.get("allowance", 0))
+                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal:.2f} | Allowance=${allow:.2f}")
+            except:
+                pass
+
             return {"success": False, "errorMsg": str(e)}
 
     def place_market_order(
@@ -252,6 +264,18 @@ class PolymarketClient:
             return resp
         except Exception as e:
             logger.error(f"Error placing market order: {e}")
+            
+            # Diagnostic: Check balance/allowance on failure
+            try:
+                ba = self._client.get_balance_allowance(
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                )
+                bal = float(ba.get("balance", 0))
+                allow = float(ba.get("allowance", 0))
+                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal:.2f} | Allowance=${allow:.2f}")
+            except:
+                pass
+
             return {"success": False, "errorMsg": str(e)}
 
     def cancel_order(self, order_id: str) -> dict:
