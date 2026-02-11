@@ -59,15 +59,47 @@ class PolymarketClient:
         )
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
 
-        # Set USDC allowance for the CTF Exchange contract so orders
-        # are not rejected with "not enough balance / allowance".
+        # Set USDC allowance for the CTF Exchange contract
+        # We perform a check-and-set loop to ensure it's actually applied.
         try:
-            resp = self._client.update_balance_allowance(
+            # 1. Check current allowance
+            ba = self._client.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
-            logger.info(f"USDC allowance update response: {resp}")
+            current_allowance = float(ba.get("allowance", 0))
+            logger.info(f"Initial Allowance Check: ${current_allowance:.2f}")
+
+            # 2. If allowance is insufficient, try to update it
+            if current_allowance < 1000000:  # arbitrary high threshold
+                logger.info("Allowance is low. Attempting to set max allowance...")
+                try:
+                    resp = self._client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                    logger.info(f"Allowance update TX response: {resp}")
+                    
+                    # 3. Wait/Poll for it to apply (up to 10s)
+                    import time
+                    for i in range(5):
+                        time.sleep(2.0)
+                        ba_check = self._client.get_balance_allowance(
+                            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                        )
+                        new_allowance = float(ba_check.get("allowance", 0))
+                        logger.info(f"Allowance poll #{i+1}: ${new_allowance:.2f}")
+                        if new_allowance > 1000000:
+                            logger.info("✅ Allowance updated successfully!")
+                            break
+                    else:
+                        logger.warning("⚠️ Allowance did not update within 10s. Transaction might be pending or failed.")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to send allowance update transaction: {e}")
+            else:
+                logger.info("✅ Allowance is already sufficient.")
+
         except Exception as e:
-            logger.warning(f"Failed to update allowance: {e}")
+            logger.warning(f"Failed to check/update allowance: {e}")
 
         # Verify actual balance and allowance
         try:
