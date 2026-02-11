@@ -77,15 +77,25 @@ class PolymarketClient:
             if current_allowance < 1_000:  
                 logger.info("Allowance is low (< $1000). Attempting to set max allowance...")
                 try:
+                    # Approve COLLATERAL (USDC)
+                    logger.info("Approving COLLATERAL (USDC)...")
                     resp = self._client.update_balance_allowance(
                         BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                     )
-                    logger.info(f"Allowance update TX response: {resp}")
+                    logger.info(f"USDC Approval TX: {resp}")
+                    
+                    # Approve CONDITIONAL (CTF)
+                    logger.info("Approving CONDITIONAL (CTF) for selling...")
+                    resp_ctf = self._client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL)
+                    )
+                    logger.info(f"CTF Approval TX: {resp_ctf}")
                     
                     # 3. Wait/Poll for it to apply (up to 10s)
                     import time
                     for i in range(5):
                         time.sleep(2.0)
+                        # Check USDC again
                         ba_check = self._client.get_balance_allowance(
                             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                         )

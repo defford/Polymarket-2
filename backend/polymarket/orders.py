@@ -88,6 +88,15 @@ class OrderManager:
             price = max(0.01, min(0.99, price))
 
         size_tokens = size_usd / price
+        
+        # Round size to 2 decimal places to avoid dust issues during sell
+        # Using floor to be safe (never hold less than we think)
+        import math
+        size_tokens = math.floor(size_tokens * 100) / 100.0
+        
+        if size_tokens <= 0:
+            logger.warning(f"Calculated size is 0 (usd={size_usd}, price={price})")
+            return None
 
         # Estimate fees (up to 3% taker on 15-min markets)
         estimated_fee = 0.0
@@ -230,6 +239,18 @@ class OrderManager:
                                 price = float(order_check["avgPrice"])
                             elif "matchedAvgPrice" in order_check:
                                 price = float(order_check["matchedAvgPrice"])
+                            
+                            # Update position size if fill data provides it
+                            if "size" in order_check and float(order_check["size"]) > 0:
+                                actual_size = float(order_check["size"])
+                                if actual_size != size_tokens:
+                                    logger.info(f"Updating position size: {size_tokens} -> {actual_size}")
+                                    size_tokens = actual_size
+                            elif "originalSize" in order_check and float(order_check["originalSize"]) > 0:
+                                actual_size = float(order_check["originalSize"])
+                                if actual_size != size_tokens:
+                                    logger.info(f"Updating position size: {size_tokens} -> {actual_size}")
+                                    size_tokens = actual_size
                             break
                         elif order_status in ("CANCELED", "KILLED", "REJECTED"):
                             logger.warning(f"❌ Order {trade.order_id} was {order_status}. Not counting as trade.")
@@ -266,6 +287,19 @@ class OrderManager:
                                     price = float(final_check["avgPrice"])
                                 elif "matchedAvgPrice" in final_check:
                                     price = float(final_check["matchedAvgPrice"])
+                                
+                                # Update position size if fill data provides it
+                                # This ensures we don't try to sell more than we actually bought
+                                if "size" in final_check and float(final_check["size"]) > 0:
+                                    actual_size = float(final_check["size"])
+                                    if actual_size != size_tokens:
+                                        logger.info(f"Updating position size: {size_tokens} -> {actual_size}")
+                                        size_tokens = actual_size
+                                elif "originalSize" in final_check and float(final_check["originalSize"]) > 0:
+                                    actual_size = float(final_check["originalSize"])
+                                    if actual_size != size_tokens:
+                                        logger.info(f"Updating position size: {size_tokens} -> {actual_size}")
+                                        size_tokens = actual_size
                             elif final_status == "CANCELED":
                                 trade.status = OrderStatus.CANCELLED
                                 trade.notes = f"CANCELLED: Timed out waiting for fill"
