@@ -50,6 +50,16 @@ class SwarmManager:
             self._bots[bot_record.id] = instance
             logger.info(f"Loaded bot #{bot_record.id}: {bot_record.name}")
 
+            # Auto-start if it was running/dry_run
+            if bot_record.status in ("running", "dry_run"):
+                logger.info(f"Resuming bot #{bot_record.id} in {bot_record.status} mode...")
+                try:
+                    # We use create_task to start them in parallel and not block init
+                    asyncio.create_task(instance.start())
+                except Exception as e:
+                    logger.error(f"Failed to resume bot #{bot_record.id}: {e}")
+                    db.update_bot(bot_record.id, status="error")
+
         logger.info(f"Swarm initialized with {len(self._bots)} bot(s)")
 
     async def _create_default_bot(self):
