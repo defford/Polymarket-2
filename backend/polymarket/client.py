@@ -306,27 +306,12 @@ class PolymarketClient:
             signed_order = self.client.create_market_order(mo)
             resp = self.client.post_order(signed_order, OrderType.FOK)
 
-            # #region agent log
-            try:
-                with open("/Users/danielefford/Documents/Fun/Polymarket 2/.cursor/debug.log", "a") as _f:
-                    import json as _json
-                    _f.write(_json.dumps({"timestamp": int(datetime.now().timestamp() * 1000), "location": "backend/polymarket/client.py:307", "message": "Raw post_order response", "data": {"resp": resp}, "runId": "run1", "hypothesisId": "H1"}) + "\n")
-            except Exception: pass
-            # #endregion
-
             logger.info(
                 f"Market order placed: {side} ${amount} "
                 f"(token={token_id[:16]}...) → {resp}"
             )
             return resp
         except Exception as e:
-            # #region agent log
-            try:
-                with open("/Users/danielefford/Documents/Fun/Polymarket 2/.cursor/debug.log", "a") as _f:
-                    import json as _json
-                    _f.write(_json.dumps({"timestamp": int(datetime.now().timestamp() * 1000), "location": "backend/polymarket/client.py:315", "message": "post_order exception", "data": {"error": str(e)}, "runId": "run1", "hypothesisId": "H1"}) + "\n")
-            except Exception: pass
-            # #endregion
             logger.error(f"Error placing market order: {e}")
             
             # Diagnostic: Check balance/allowance on failure
