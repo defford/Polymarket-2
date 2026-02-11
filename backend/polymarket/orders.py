@@ -199,6 +199,14 @@ class OrderManager:
 
         # --- Live order placement ---
         try:
+            # #region agent log
+            try:
+                with open("/Users/danielefford/Documents/Fun/Polymarket 2/.cursor/debug.log", "a") as _f:
+                    import json as _json
+                    _f.write(_json.dumps({"timestamp": int(datetime.now().timestamp() * 1000), "location": "backend/polymarket/orders.py:203", "message": "Attempting live order", "data": {"token_id": token_id, "amount": size_usd, "side": side.value, "order_type": order_type}, "runId": "run1", "hypothesisId": "H1"}) + "\n")
+            except Exception: pass
+            # #endregion
+
             if order_type == "market":
                 resp = self._pm_client.place_market_order(
                     token_id=token_id,
@@ -213,6 +221,14 @@ class OrderManager:
                     side="BUY",
                     post_only=(order_type == "postOnly"),
                 )
+
+            # #region agent log
+            try:
+                with open("/Users/danielefford/Documents/Fun/Polymarket 2/.cursor/debug.log", "a") as _f:
+                    import json as _json
+                    _f.write(_json.dumps({"timestamp": int(datetime.now().timestamp() * 1000), "location": "backend/polymarket/orders.py:216", "message": "Order placement response", "data": {"resp": resp}, "runId": "run1", "hypothesisId": "H1"}) + "\n")
+            except Exception: pass
+            # #endregion
 
             if resp.get("success") or resp.get("orderID"):
                 trade.order_id = resp.get("orderID", resp.get("order_id", "unknown"))
@@ -231,6 +247,14 @@ class OrderManager:
                         await asyncio.sleep(1.0)
                         order_check = self._pm_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
+
+                        # #region agent log
+                        try:
+                            with open("/Users/danielefford/Documents/Fun/Polymarket 2/.cursor/debug.log", "a") as _f:
+                                import json as _json
+                                _f.write(_json.dumps({"timestamp": int(datetime.now().timestamp() * 1000), "location": "backend/polymarket/orders.py:236", "message": "Verification poll", "data": {"retries": i+1, "order_check": order_check}, "runId": "run1", "hypothesisId": "H2"}) + "\n")
+                        except Exception: pass
+                        # #endregion
 
                         if order_status == "FILLED" or order_status == "MATCHED":
                             filled = True
