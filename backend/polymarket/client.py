@@ -66,12 +66,16 @@ class PolymarketClient:
             ba = self._client.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
-            current_allowance = float(ba.get("allowance", 0))
-            logger.info(f"Initial Allowance Check: ${current_allowance:.2f}")
+            # USDC has 6 decimals
+            raw_allowance = float(ba.get("allowance", 0))
+            current_allowance = raw_allowance / 1_000_000
+            
+            logger.info(f"Initial Allowance Check: {raw_allowance} (approx ${current_allowance:,.2f})")
 
             # 2. If allowance is insufficient, try to update it
-            if current_allowance < 1000000:  # arbitrary high threshold
-                logger.info("Allowance is low. Attempting to set max allowance...")
+            # We want allowance > $1B usually (max approval)
+            if current_allowance < 1_000:  
+                logger.info("Allowance is low (< $1000). Attempting to set max allowance...")
                 try:
                     resp = self._client.update_balance_allowance(
                         BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -85,9 +89,10 @@ class PolymarketClient:
                         ba_check = self._client.get_balance_allowance(
                             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                         )
-                        new_allowance = float(ba_check.get("allowance", 0))
-                        logger.info(f"Allowance poll #{i+1}: ${new_allowance:.2f}")
-                        if new_allowance > 1000000:
+                        new_raw = float(ba_check.get("allowance", 0))
+                        new_human = new_raw / 1_000_000
+                        logger.info(f"Allowance poll #{i+1}: ${new_human:,.2f}")
+                        if new_human > 1_000:
                             logger.info("✅ Allowance updated successfully!")
                             break
                     else:
@@ -106,16 +111,22 @@ class PolymarketClient:
             ba = self._client.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
-            bal = float(ba.get("balance", 0))
-            allow = float(ba.get("allowance", 0))
+            raw_bal = float(ba.get("balance", 0))
+            raw_allow = float(ba.get("allowance", 0))
+            
+            # Convert atomic units to USDC (6 decimals)
+            bal_usdc = raw_bal / 1_000_000
+            allow_usdc = raw_allow / 1_000_000
             
             target_address = POLYMARKET_PROXY_ADDRESS if POLYMARKET_PROXY_ADDRESS else "Signer (EOA)"
-            logger.info(f"💰 Account State [{target_address}] -- Balance: ${bal:.2f} | Allowance: ${allow:.2f}")
+            logger.info(f"💰 Account State [{target_address}] -- Balance: ${bal_usdc:,.2f} | Allowance: ${allow_usdc:,.2f}")
 
-            if bal < 5.0:
-                logger.warning(f"⚠️ Low balance on {target_address}! If you deposited to your private key address, move funds to the Proxy.")
-            if allow < 100.0:
-                logger.warning("⚠️ Low allowance! Orders may fail.")
+            if bal_usdc < 5.0:
+                logger.warning(f"⚠️ Low balance on {target_address}! You have ${bal_usdc:.2f}, but need at least $5.00 for a trade.")
+                logger.warning("If you deposited funds, make sure they are in the PROXY address (if configured), not the Signer.")
+            
+            if allow_usdc < 5.0:
+                logger.warning(f"⚠️ Low allowance (${allow_usdc:.2f})! Orders will likely fail.")
                 
         except Exception as e:
             logger.error(f"Could not verify balance/allowance: {e}")
@@ -260,9 +271,11 @@ class PolymarketClient:
                 ba = self._client.get_balance_allowance(
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
-                bal = float(ba.get("balance", 0))
-                allow = float(ba.get("allowance", 0))
-                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal:.2f} | Allowance=${allow:.2f}")
+                raw_bal = float(ba.get("balance", 0))
+                raw_allow = float(ba.get("allowance", 0))
+                bal_usdc = raw_bal / 1_000_000
+                allow_usdc = raw_allow / 1_000_000
+                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
             except:
                 pass
 
@@ -302,9 +315,11 @@ class PolymarketClient:
                 ba = self._client.get_balance_allowance(
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
-                bal = float(ba.get("balance", 0))
-                allow = float(ba.get("allowance", 0))
-                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal:.2f} | Allowance=${allow:.2f}")
+                raw_bal = float(ba.get("balance", 0))
+                raw_allow = float(ba.get("allowance", 0))
+                bal_usdc = raw_bal / 1_000_000
+                allow_usdc = raw_allow / 1_000_000
+                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
             except:
                 pass
 

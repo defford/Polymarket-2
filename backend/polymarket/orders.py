@@ -223,7 +223,7 @@ class OrderManager:
                         order_check = self._pm_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
 
-                        if order_status == "FILLED":
+                        if order_status == "FILLED" or order_status == "MATCHED":
                             filled = True
                             # Try to get avg fill price
                             if "avgPrice" in order_check:
@@ -259,7 +259,7 @@ class OrderManager:
                             final_check = self._pm_client.get_order(trade.order_id)
                             final_status = final_check.get("status") if final_check else "UNKNOWN"
 
-                            if final_status == "FILLED":
+                            if final_status == "FILLED" or final_status == "MATCHED":
                                 logger.info(f"✅ Order {trade.order_id} actually FILLED! Recovering trade.")
                                 filled = True
                                 if "avgPrice" in final_check:
@@ -272,11 +272,17 @@ class OrderManager:
                                 trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
                                 return None
                             else:
-                                logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED.")
-                                trade.status = OrderStatus.CANCELLED
-                                trade.notes = f"AMBIGUOUS: Cancel failed but status is {final_status}"
-                                trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
-                                return None
+                                # Fallback: If we can't determine, but cancel failed saying "matched", we must assume filled.
+                                # The "matched orders can't be canceled" message is the key indicator.
+                                if cancel_resp and "matched orders can't be canceled" in str(cancel_resp):
+                                    logger.info(f"✅ Cancel failed because matched - Order {trade.order_id} is FILLED! Recovering.")
+                                    filled = True
+                                else:
+                                    logger.error(f"❌ Order {trade.order_id} state ambiguous ({final_status}). Marking as CANCELLED.")
+                                    trade.status = OrderStatus.CANCELLED
+                                    trade.notes = f"AMBIGUOUS: Cancel failed but status is {final_status}"
+                                    trade.id = db.insert_trade(trade, trade_log_data=trade_log_data, bot_id=self._bot_id)
+                                    return None
 
                     # If we get here, it is FILLED
                     trade.status = OrderStatus.FILLED
