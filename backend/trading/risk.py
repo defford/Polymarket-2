@@ -77,9 +77,10 @@ class RiskManager:
         # Check consecutive losses
         if self._consecutive_losses >= config.max_consecutive_losses:
             self._enter_cooldown(config.cooldown_minutes)
+            self._consecutive_losses = 0  # Reset counter so we can trade after cooldown
             return False, (
-                f"Max consecutive losses hit ({self._consecutive_losses} / "
-                f"{config.max_consecutive_losses})"
+                f"Max consecutive losses hit ({config.max_consecutive_losses}). "
+                "Resetting counter and entering cooldown."
             )
 
         # Check trades per window
