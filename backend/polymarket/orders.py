@@ -146,6 +146,17 @@ class OrderManager:
                 except Exception as e:
                     logger.debug(f"Error computing entry OBI: {e}")
 
+                # Extract Bayesian data from signal
+                signal = getattr(buy_state_snapshot, "signal", None)
+                if signal:
+                    log_entry["bayesian"] = {
+                        "l1_evidence": getattr(signal, "l1_evidence", "L1_NEUTRAL"),
+                        "l2_evidence": getattr(signal, "l2_evidence", "L2_NEUTRAL"),
+                        "posterior": getattr(signal, "bayesian_posterior", None),
+                        "confidence_gate": getattr(signal, "bayesian_confidence_gate", True),
+                        "fallback": getattr(signal, "bayesian_fallback", False),
+                    }
+
                 trade_log_data = json.dumps(log_entry, default=str)
             except Exception as e:
                 logger.debug(f"Error serializing buy state: {e}")

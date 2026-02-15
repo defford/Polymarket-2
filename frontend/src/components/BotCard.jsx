@@ -1,4 +1,5 @@
-import { Play, Square, TrendingUp, BarChart3, Target, ChevronRight, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { Play, Square, TrendingUp, BarChart3, Target, ChevronRight, Trash2, Pencil } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 
 const STATUS_BADGES = {
@@ -17,7 +18,9 @@ function formatPnl(value) {
 }
 
 export default function BotCard({ bot, wsState, onClick, onRefresh }) {
-  const { post, del } = useApi()
+  const { post, del, put } = useApi()
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(bot.name)
 
   // Merge API list data with live WS state
   const liveState = wsState || {}
@@ -49,6 +52,33 @@ export default function BotCard({ bot, wsState, onClick, onRefresh }) {
     onRefresh?.()
   }
 
+  const handleEditName = (e) => {
+    e.stopPropagation()
+    setEditName(bot.name)
+    setIsEditing(true)
+  }
+
+  const handleSaveName = async () => {
+    const trimmedName = editName.trim()
+    if (!trimmedName || trimmedName === bot.name) {
+      setIsEditing(false)
+      setEditName(bot.name)
+      return
+    }
+    await put(`/api/swarm/${bot.id}`, { name: trimmedName })
+    setIsEditing(false)
+    onRefresh?.()
+  }
+
+  const handleNameKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSaveName()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
+      setEditName(bot.name)
+    }
+  }
+
   return (
     <div
       onClick={() => onClick?.(bot.id)}
@@ -59,9 +89,22 @@ export default function BotCard({ bot, wsState, onClick, onRefresh }) {
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-display font-bold text-text-primary truncate">
-                {bot.name}
-              </h3>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onBlur={handleSaveName}
+                  onKeyDown={handleNameKeyDown}
+                  onClick={(e) => e.stopPropagation()}
+                  autoFocus
+                  className="text-sm font-display font-bold text-text-primary bg-surface-2 border border-accent-cyan rounded px-1.5 py-0.5 focus:outline-none"
+                />
+              ) : (
+                <h3 className="text-sm font-display font-bold text-text-primary truncate">
+                  {bot.name}
+                </h3>
+              )}
               <span className={badge.cls}>
                 {isRunning && (
                   <span className="relative flex h-1.5 w-1.5 mr-1">
@@ -78,7 +121,16 @@ export default function BotCard({ bot, wsState, onClick, onRefresh }) {
               </p>
             )}
           </div>
-          <ChevronRight className="w-4 h-4 text-text-dim opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1" />
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1">
+            <button
+              onClick={handleEditName}
+              className="p-1.5 rounded-md text-text-dim hover:text-accent-cyan hover:bg-accent-cyan/10 transition-colors cursor-pointer"
+              title="Rename bot"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <ChevronRight className="w-4 h-4 text-text-dim" />
+          </div>
         </div>
 
         {/* Stats */}

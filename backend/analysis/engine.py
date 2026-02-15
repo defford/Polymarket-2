@@ -88,6 +88,7 @@ class AnalysisEngine:
             "mae_mfe": self._mae_mfe_analysis(trades_with_log),
             "fill_rate": self._fill_rate_analysis(trades_with_log),
             "orderbook": self._orderbook_analysis(trades_with_log),
+            "bayesian": self._bayesian_analysis(trades_with_log),
             "trade_count": total_trades,
             "session_count": len(session_ids),
         }
@@ -841,6 +842,130 @@ class AnalysisEngine:
             },
             "by_imbalance_direction": bucket_result,
             "imbalance_vs_pnl_correlation": round(imbalance_pnl_corr, 4) if imbalance_pnl_corr is not None else None,
+        }
+
+    # ------------------------------------------------------------------
+    # 16. Bayesian Analysis
+    # ------------------------------------------------------------------
+
+    def _bayesian_analysis(self, trades: list[dict]) -> dict:
+        """Analyze Bayesian evidence effectiveness and gating behavior."""
+        evidence_combinations = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0})
+        posterior_buckets = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0})
+        gate_passed = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        gate_blocked = {"count": 0, "potential_wins": 0, "potential_pnl": 0.0}
+        fallback_mode = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        active_mode = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        posteriors = []
+        pnls = []
+
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            bayesian = ld.get("bayesian")
+            if not bayesian:
+                continue
+
+            has_data = True
+            pnl = t["trade"].pnl or 0
+            l1_evidence = bayesian.get("l1_evidence", "L1_NEUTRAL")
+            l2_evidence = bayesian.get("l2_evidence", "L2_NEUTRAL")
+            posterior = bayesian.get("posterior")
+            confidence_gate = bayesian.get("confidence_gate", True)
+            fallback = bayesian.get("fallback", False)
+
+            # Track evidence combinations
+            key = f"{l1_evidence}|{l2_evidence}"
+            evidence_combinations[key]["count"] += 1
+            evidence_combinations[key]["total_pnl"] += pnl
+            if pnl > 0:
+                evidence_combinations[key]["wins"] += 1
+
+            # Track posterior distribution
+            if posterior is not None:
+                posterior_bucket = f"{int(posterior * 10) / 10:.1f}-{int(posterior * 10 + 1) / 10:.1f}"
+                posterior_buckets[posterior_bucket]["count"] += 1
+                posterior_buckets[posterior_bucket]["total_pnl"] += pnl
+                if pnl > 0:
+                    posterior_buckets[posterior_bucket]["wins"] += 1
+                posteriors.append(posterior)
+                pnls.append(pnl)
+
+            # Track gate behavior
+            if confidence_gate:
+                gate_passed["count"] += 1
+                gate_passed["total_pnl"] += pnl
+                if pnl > 0:
+                    gate_passed["wins"] += 1
+            else:
+                gate_blocked["count"] += 1
+                gate_blocked["potential_pnl"] += pnl
+                if pnl > 0:
+                    gate_blocked["potential_wins"] += 1
+
+            # Track fallback vs active mode
+            if fallback:
+                fallback_mode["count"] += 1
+                fallback_mode["total_pnl"] += pnl
+                if pnl > 0:
+                    fallback_mode["wins"] += 1
+            else:
+                active_mode["count"] += 1
+                active_mode["total_pnl"] += pnl
+                if pnl > 0:
+                    active_mode["wins"] += 1
+
+        if not has_data:
+            return {}
+
+        # Compute evidence combination stats
+        evidence_result = {}
+        for key, data in sorted(evidence_combinations.items(), key=lambda x: -x[1]["count"]):
+            c = data["count"]
+            evidence_result[key] = {
+                "count": c,
+                "win_rate": round(data["wins"] / c, 4) if c else 0,
+                "avg_pnl": round(data["total_pnl"] / c, 4) if c else 0,
+            }
+
+        # Compute posterior bucket stats
+        posterior_result = {}
+        for key in sorted(posterior_buckets.keys()):
+            data = posterior_buckets[key]
+            c = data["count"]
+            posterior_result[key] = {
+                "count": c,
+                "win_rate": round(data["wins"] / c, 4) if c else 0,
+                "avg_pnl": round(data["total_pnl"] / c, 4) if c else 0,
+            }
+
+        # Correlation between posterior and PnL
+        posterior_pnl_corr = self._pearson(posteriors, pnls) if len(posteriors) >= 3 else None
+
+        return {
+            "evidence_combinations": evidence_result,
+            "posterior_buckets": posterior_result,
+            "posterior_vs_pnl_correlation": round(posterior_pnl_corr, 4) if posterior_pnl_corr is not None else None,
+            "gate_passed": {
+                "count": gate_passed["count"],
+                "win_rate": round(gate_passed["wins"] / gate_passed["count"], 4) if gate_passed["count"] else 0,
+                "avg_pnl": round(gate_passed["total_pnl"] / gate_passed["count"], 4) if gate_passed["count"] else 0,
+            },
+            "gate_blocked": {
+                "count": gate_blocked["count"],
+                "potential_win_rate": round(gate_blocked["potential_wins"] / gate_blocked["count"], 4) if gate_blocked["count"] else 0,
+                "potential_avg_pnl": round(gate_blocked["potential_pnl"] / gate_blocked["count"], 4) if gate_blocked["count"] else 0,
+            },
+            "fallback_mode": {
+                "count": fallback_mode["count"],
+                "win_rate": round(fallback_mode["wins"] / fallback_mode["count"], 4) if fallback_mode["count"] else 0,
+                "avg_pnl": round(fallback_mode["total_pnl"] / fallback_mode["count"], 4) if fallback_mode["count"] else 0,
+            },
+            "active_mode": {
+                "count": active_mode["count"],
+                "win_rate": round(active_mode["wins"] / active_mode["count"], 4) if active_mode["count"] else 0,
+                "avg_pnl": round(active_mode["total_pnl"] / active_mode["count"], 4) if active_mode["count"] else 0,
+            },
         }
 
     # ------------------------------------------------------------------

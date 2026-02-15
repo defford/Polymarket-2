@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ArrowLeft, Play, Square, Settings } from 'lucide-react'
+import { ArrowLeft, Play, Square, Settings, Pencil } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import StatsCards from './StatsCards'
 import SignalPanel from './SignalPanel'
@@ -24,6 +24,8 @@ export default function BotDetailView({ botId, botState, onBack }) {
   const [config, setConfig] = useState(null)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [selectedTrade, setSelectedTrade] = useState(null)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editName, setEditName] = useState('')
 
   // Fetch bot info from the list endpoint
   useEffect(() => {
@@ -60,6 +62,32 @@ export default function BotDetailView({ botId, botState, onBack }) {
     if (data) setConfig(data)
   }, [put, botId])
 
+  const handleEditName = () => {
+    setEditName(botInfo?.name || '')
+    setIsEditingName(true)
+  }
+
+  const handleSaveName = async () => {
+    const trimmedName = editName.trim()
+    if (!trimmedName || trimmedName === botInfo?.name) {
+      setIsEditingName(false)
+      return
+    }
+    const data = await put(`/api/swarm/${botId}`, { name: trimmedName })
+    if (data) {
+      setBotInfo(prev => prev ? { ...prev, name: trimmedName } : prev)
+    }
+    setIsEditingName(false)
+  }
+
+  const handleNameKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSaveName()
+    } else if (e.key === 'Escape') {
+      setIsEditingName(false)
+    }
+  }
+
   return (
     <div className="space-y-0 animate-fade-in">
       {/* Bot Header */}
@@ -74,9 +102,30 @@ export default function BotDetailView({ botId, botState, onBack }) {
             </button>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-display font-bold text-text-primary">
-                  {botInfo?.name || `Bot #${botId}`}
-                </h2>
+                {isEditingName ? (
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onBlur={handleSaveName}
+                    onKeyDown={handleNameKeyDown}
+                    autoFocus
+                    className="text-sm font-display font-bold text-text-primary bg-surface-2 border border-accent-cyan rounded px-1.5 py-0.5 focus:outline-none"
+                  />
+                ) : (
+                  <h2 className="text-sm font-display font-bold text-text-primary">
+                    {botInfo?.name || `Bot #${botId}`}
+                  </h2>
+                )}
+                {!isEditingName && (
+                  <button
+                    onClick={handleEditName}
+                    className="p-1 rounded text-text-dim hover:text-accent-cyan hover:bg-accent-cyan/10 transition-colors cursor-pointer"
+                    title="Rename bot"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                )}
                 <span className={badge.cls}>
                   {isRunning && (
                     <span className="relative flex h-1.5 w-1.5 mr-1">

@@ -169,6 +169,28 @@ PARAM_RANGES = {
             "desc": "How often to scan for new active markets.",
         },
     },
+    "bayesian": {
+        "enabled": {
+            "type": "bool",
+            "desc": "Enable Bayesian inference for signal weighting. Uses historical performance to compute P(Win|Signals).",
+        },
+        "rolling_window": {
+            "min": 50, "max": 500, "type": "int",
+            "desc": "Number of recent trades to consider for prior probability calculation.",
+        },
+        "min_sample_size": {
+            "min": 20, "max": 100, "type": "int",
+            "desc": "Minimum trades before Bayesian activates. Lower = activates sooner but less reliable.",
+        },
+        "confidence_threshold": {
+            "min": 0.2, "max": 0.6, "type": "float",
+            "desc": "Minimum posterior probability to allow trade. Higher = more selective (fewer trades).",
+        },
+        "smoothing_alpha": {
+            "min": 0.01, "max": 1.0, "type": "float",
+            "desc": "Laplace smoothing factor. Prevents zero probabilities for rare evidence combinations.",
+        },
+    },
 }
 
 
@@ -395,6 +417,73 @@ def build_analysis_prompt(analysis: dict, goal: str, base_config: dict) -> str:
             )
         sections.append("")
 
+    # Bayesian analysis
+    bayesian = analysis.get("bayesian", {})
+    if bayesian:
+        sections.append("### Bayesian Analysis")
+        
+        # Evidence combinations
+        evidence = bayesian.get("evidence_combinations", {})
+        if evidence:
+            sections.append("#### Evidence Combinations")
+            sections.append("Evidence | Trades | Win Rate | Avg PnL")
+            sections.append("--- | --- | --- | ---")
+            for key, data in list(evidence.items())[:10]:
+                sections.append(
+                    f"{key} | {data['count']} | {data['win_rate']:.1%} | ${data['avg_pnl']:.4f}"
+                )
+            sections.append("")
+        
+        # Posterior buckets
+        posterior = bayesian.get("posterior_buckets", {})
+        if posterior:
+            sections.append("#### Posterior Distribution")
+            sections.append("Posterior Range | Trades | Win Rate | Avg PnL")
+            sections.append("--- | --- | --- | ---")
+            for key, data in sorted(posterior.items()):
+                sections.append(
+                    f"{key} | {data['count']} | {data['win_rate']:.1%} | ${data['avg_pnl']:.4f}"
+                )
+            sections.append("")
+        
+        # Gate behavior
+        gate_passed = bayesian.get("gate_passed", {})
+        gate_blocked = bayesian.get("gate_blocked", {})
+        if gate_passed.get("count") or gate_blocked.get("count"):
+            sections.append("#### Confidence Gate Behavior")
+            if gate_passed.get("count"):
+                sections.append(
+                    f"Passed gate: {gate_passed['count']} trades, {gate_passed['win_rate']:.1%} win rate, "
+                    f"${gate_passed['avg_pnl']:.4f} avg PnL"
+                )
+            if gate_blocked.get("count"):
+                sections.append(
+                    f"Blocked by gate: {gate_blocked['count']} trades, {gate_blocked['potential_win_rate']:.1%} would-have-won rate, "
+                    f"${gate_blocked['potential_avg_pnl']:.4f} potential avg PnL"
+                )
+            sections.append("")
+        
+        # Fallback vs active mode
+        fallback = bayesian.get("fallback_mode", {})
+        active = bayesian.get("active_mode", {})
+        if fallback.get("count") or active.get("count"):
+            sections.append("#### Bayesian Mode")
+            if fallback.get("count"):
+                sections.append(
+                    f"Fallback (< min trades): {fallback['count']} trades, {fallback['win_rate']:.1%} win rate"
+                )
+            if active.get("count"):
+                sections.append(
+                    f"Active Bayesian: {active['count']} trades, {active['win_rate']:.1%} win rate"
+                )
+            sections.append("")
+        
+        # Correlation
+        corr = bayesian.get("posterior_vs_pnl_correlation")
+        if corr is not None:
+            sections.append(f"Posterior vs PnL correlation: {corr:.4f}")
+            sections.append("")
+
     # Section 3: Optimization Goal
     goal_desc = OPTIMIZATION_GOALS.get(goal, OPTIMIZATION_GOALS["balanced"])
     sections.append(f"## Optimization Goal: {goal}\n")
@@ -410,6 +499,7 @@ def build_analysis_prompt(analysis: dict, goal: str, base_config: dict) -> str:
         "risk": { <all RiskConfig fields with your recommended values> },
         "exit": { <all ExitConfig fields with your recommended values> },
         "trading": { <all TradingConfig fields with your recommended values> },
+        "bayesian": { <all BayesianConfig fields with your recommended values> },
         "mode": "dry_run"
     },
     "reasoning": "2-3 paragraphs explaining what you changed and why, referencing specific data from the analysis.",

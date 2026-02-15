@@ -147,6 +147,7 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
               <MaeMfeAnalysis data={analysis.mae_mfe} />
               <FillRateAnalysis data={analysis.fill_rate} />
               <OrderbookAnalysis data={analysis.orderbook} />
+              <BayesianAnalysis data={analysis.bayesian} />
               <ThresholdAnalysis data={analysis.threshold_analysis} />
               <LayerAnalysis data={analysis.layer_weight_analysis} />
               <TimePatterns data={analysis.time_patterns} />
@@ -766,6 +767,135 @@ function OrderbookAnalysis({ data }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
+  )
+}
+
+function BayesianAnalysis({ data }) {
+  if (!data || Object.keys(data).length === 0) return null
+  return (
+    <CollapsibleSection title="Bayesian Analysis">
+      <div className="space-y-3">
+        {/* Evidence Combinations */}
+        {data.evidence_combinations && Object.keys(data.evidence_combinations).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1">Evidence Combinations</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Evidence</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.evidence_combinations).slice(0, 8).map(([key, d]) => (
+                  <tr key={key} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary text-2xs">{key}</td>
+                    <td className="py-1 text-right text-text-dim">{d.count}</td>
+                    <td className={`py-1 text-right ${d.win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className={`py-1 text-right ${d.avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      ${d.avg_pnl?.toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Posterior Buckets */}
+        {data.posterior_buckets && Object.keys(data.posterior_buckets).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Posterior Distribution</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Posterior</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.posterior_buckets).sort().map(([key, d]) => (
+                  <tr key={key} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary">{key}</td>
+                    <td className="py-1 text-right text-text-dim">{d.count}</td>
+                    <td className={`py-1 text-right ${d.win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className={`py-1 text-right ${d.avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      ${d.avg_pnl?.toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Gate Behavior */}
+        {(data.gate_passed?.count || data.gate_blocked?.count) && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Confidence Gate</div>
+            <div className="space-y-1">
+              {data.gate_passed?.count > 0 && (
+                <div className="data-row">
+                  <span className="data-label">Passed gate</span>
+                  <span className="data-value text-accent-green">
+                    {data.gate_passed.count} trades, {(data.gate_passed.win_rate * 100).toFixed(0)}% win
+                  </span>
+                </div>
+              )}
+              {data.gate_blocked?.count > 0 && (
+                <div className="data-row">
+                  <span className="data-label">Blocked by gate</span>
+                  <span className="data-value text-accent-yellow">
+                    {data.gate_blocked.count} trades, {(data.gate_blocked.potential_win_rate * 100).toFixed(0)}% would-won
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Mode Comparison */}
+        {(data.fallback_mode?.count || data.active_mode?.count) && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Bayesian Mode</div>
+            <div className="space-y-1">
+              {data.fallback_mode?.count > 0 && (
+                <div className="data-row">
+                  <span className="data-label">Fallback (&lt; min trades)</span>
+                  <span className="data-value">
+                    {data.fallback_mode.count} trades, {(data.fallback_mode.win_rate * 100).toFixed(0)}% win
+                  </span>
+                </div>
+              )}
+              {data.active_mode?.count > 0 && (
+                <div className="data-row">
+                  <span className="data-label">Active Bayesian</span>
+                  <span className="data-value">
+                    {data.active_mode.count} trades, {(data.active_mode.win_rate * 100).toFixed(0)}% win
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Correlation */}
+        {data.posterior_vs_pnl_correlation != null && (
+          <div className="data-row">
+            <span className="data-label">Posterior vs PnL Correlation</span>
+            <span className="data-value">{data.posterior_vs_pnl_correlation?.toFixed(4)}</span>
           </div>
         )}
       </div>

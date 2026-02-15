@@ -881,6 +881,21 @@ def _format_session_export(session, stats, analytics, trades_with_logs) -> str:
                 if btc_price:
                     lines.append(f"- BTC Price at Entry: ${btc_price:,.2f}")
 
+                # Bayesian state
+                bayesian = log.get("bayesian")
+                if bayesian:
+                    posterior = bayesian.get("posterior")
+                    l1_evidence = bayesian.get("l1_evidence", "N/A")
+                    l2_evidence = bayesian.get("l2_evidence", "N/A")
+                    gate = "PASS" if bayesian.get("confidence_gate", True) else "FAIL"
+                    fallback = "yes" if bayesian.get("fallback", False) else "no"
+                    if posterior is not None:
+                        lines.append(f"- Bayesian: posterior={posterior:.2f} gate={gate} fallback={fallback}")
+                        lines.append(f"  - Evidence: l1={l1_evidence} l2={l2_evidence}")
+                    else:
+                        lines.append(f"- Bayesian: fallback mode (insufficient history)")
+                        lines.append(f"  - Evidence: l1={l1_evidence} l2={l2_evidence}")
+
                 # Order book summary
                 for book_key, label in [("orderbook_up", "UP Token"), ("orderbook_down", "DOWN Token")]:
                     ob = buy_state.get(book_key, {})
