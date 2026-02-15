@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X, Brain, ChevronRight, ChevronDown, Sparkles, Bot, AlertTriangle } from 'lucide-react'
+import { X, Brain, ChevronRight, ChevronDown, Sparkles, Bot, AlertTriangle, Download } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 
 const GOALS = [
@@ -73,6 +73,243 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
     } else {
       setError(result?.detail || 'Bot creation failed')
     }
+  }
+
+  const downloadAnalysisAsMarkdown = () => {
+    if (!analysis) return
+
+    const lines = []
+    const now = new Date().toISOString()
+
+    lines.push('# Trade Analysis Report')
+    lines.push(`Generated: ${now}`)
+    lines.push(`Analysis ID: ${analysisId || 'N/A'}`)
+    lines.push('')
+
+    // Summary
+    const s = analysis.summary || {}
+    lines.push('## Summary')
+    lines.push(`- **Trades:** ${s.total_trades_analyzed || 0}`)
+    lines.push(`- **Sessions:** ${s.total_sessions_analyzed || 0}`)
+    lines.push(`- **Win Rate:** ${((s.overall_win_rate || 0) * 100).toFixed(1)}%`)
+    lines.push(`- **Total PnL:** $${(s.overall_total_pnl || 0).toFixed(2)}`)
+    lines.push(`- **Avg PnL/Trade:** $${(s.overall_avg_pnl_per_trade || 0).toFixed(4)}`)
+    lines.push(`- **Bots:** ${s.total_bots || 0}`)
+    lines.push('')
+
+    // Signal Score Effectiveness
+    const buckets = analysis.signal_score_buckets || {}
+    if (Object.keys(buckets).length > 0) {
+      lines.push('## Signal Score Effectiveness')
+      lines.push('| Score Range | Trades | Win Rate | Avg PnL |')
+      lines.push('|------------|--------|----------|---------|')
+      for (const [range, d] of Object.entries(buckets).sort()) {
+        lines.push(`| ${range} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+      }
+      lines.push('')
+    }
+
+    // Exit Reasons
+    const exits = analysis.exit_reasons || {}
+    if (Object.keys(exits).length > 0) {
+      lines.push('## Exit Reasons')
+      lines.push('| Reason | Count | Avg PnL | Avg Hold |')
+      lines.push('|--------|-------|---------|----------|')
+      for (const [reason, d] of Object.entries(exits)) {
+        lines.push(`| ${reason} | ${d.count} | $${(d.avg_pnl || 0).toFixed(4)} | ${d.avg_hold_seconds?.toFixed(0) || 0}s |`)
+      }
+      lines.push('')
+    }
+
+    // Slippage
+    const slippage = analysis.slippage || {}
+    if (slippage.by_order_type && Object.keys(slippage.by_order_type).length > 0) {
+      lines.push('## Slippage Analysis')
+      lines.push('| Order Type | Trades | Entry Slip | Exit Slip | Cost |')
+      lines.push('|------------|--------|------------|-----------|------|')
+      for (const [type, d] of Object.entries(slippage.by_order_type)) {
+        lines.push(`| ${type} | ${d.count} | ${d.avg_entry_slippage_bps?.toFixed(1) || 0} bps | ${d.avg_exit_slippage_bps?.toFixed(1) || 0} bps | $${d.total_slippage_cost?.toFixed(2) || 0} |`)
+      }
+      lines.push(`**Total Slippage Cost:** $${slippage.total_slippage_cost?.toFixed(2) || 0}`)
+      lines.push('')
+    }
+
+    // MAE/MFE
+    const maeMfe = analysis.mae_mfe || {}
+    if (maeMfe.winners?.count || maeMfe.losers?.count) {
+      lines.push('## MAE / MFE Analysis')
+      lines.push('| Metric | Winners | Losers |')
+      lines.push('|--------|---------|--------|')
+      lines.push(`| Count | ${maeMfe.winners?.count || 0} | ${maeMfe.losers?.count || 0} |`)
+      lines.push(`| Avg MAE | ${((maeMfe.winners?.avg_mae_pct || 0) * 100).toFixed(2)}% | ${((maeMfe.losers?.avg_mae_pct || 0) * 100).toFixed(2)}% |`)
+      lines.push(`| Avg MFE | ${((maeMfe.winners?.avg_mfe_pct || 0) * 100).toFixed(2)}% | ${((maeMfe.losers?.avg_mfe_pct || 0) * 100).toFixed(2)}% |`)
+      if (maeMfe.winners?.avg_capture_ratio != null) {
+        lines.push(`**Profit Capture Ratio:** ${((maeMfe.winners.avg_capture_ratio || 0) * 100).toFixed(0)}%`)
+      }
+      if (maeMfe.winners?.avg_missed_profit_pct != null) {
+        lines.push(`**Avg Missed Profit:** ${((maeMfe.winners.avg_missed_profit_pct || 0) * 100).toFixed(2)}%`)
+      }
+      lines.push('')
+    }
+
+    // Fill Rate
+    const fillRate = analysis.fill_rate || {}
+    if (fillRate.by_order_type && Object.keys(fillRate.by_order_type).length > 0) {
+      lines.push('## Fill Rate Analysis')
+      lines.push('| Order Type | Attempts | Fill Rate | Avg Time | Avg PnL |')
+      lines.push('|------------|----------|-----------|----------|---------|')
+      for (const [type, d] of Object.entries(fillRate.by_order_type)) {
+        lines.push(`| ${type} | ${d.total_attempts} | ${(d.fill_rate * 100).toFixed(0)}% | ${d.avg_time_to_fill?.toFixed(1) || 0}s | $${(d.avg_pnl || 0).toFixed(4)} |`)
+      }
+      lines.push('')
+    }
+
+    // Order Book
+    const orderbook = analysis.orderbook || {}
+    if (orderbook.winners?.count || orderbook.losers?.count) {
+      lines.push('## Order Book Analysis')
+      lines.push('| Metric | Winners | Losers |')
+      lines.push('|--------|---------|--------|')
+      lines.push(`| Avg Imbalance | ${orderbook.winners?.avg_imbalance_at_entry?.toFixed(4) || 'N/A'} | ${orderbook.losers?.avg_imbalance_at_entry?.toFixed(4) || 'N/A'} |`)
+      lines.push(`| Avg Spread | ${orderbook.winners?.avg_spread_at_entry?.toFixed(4) || 'N/A'} | ${orderbook.losers?.avg_spread_at_entry?.toFixed(4) || 'N/A'} |`)
+      if (orderbook.imbalance_vs_pnl_correlation != null) {
+        lines.push(`**Imbalance vs PnL Correlation:** ${orderbook.imbalance_vs_pnl_correlation.toFixed(4)}`)
+      }
+      lines.push('')
+    }
+
+    // Bayesian
+    const bayesian = analysis.bayesian || {}
+    if (Object.keys(bayesian).length > 0) {
+      lines.push('## Bayesian Analysis')
+      
+      if (bayesian.evidence_combinations && Object.keys(bayesian.evidence_combinations).length > 0) {
+        lines.push('### Evidence Combinations')
+        lines.push('| Evidence | Trades | Win Rate | Avg PnL |')
+        lines.push('|----------|--------|----------|---------|')
+        for (const [key, d] of Object.entries(bayesian.evidence_combinations)) {
+          lines.push(`| ${key} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+        }
+        lines.push('')
+      }
+
+      if (bayesian.posterior_buckets && Object.keys(bayesian.posterior_buckets).length > 0) {
+        lines.push('### Posterior Distribution')
+        lines.push('| Posterior | Trades | Win Rate | Avg PnL |')
+        lines.push('|-----------|--------|----------|---------|')
+        for (const [key, d] of Object.entries(bayesian.posterior_buckets).sort()) {
+          lines.push(`| ${key} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+        }
+        lines.push('')
+      }
+
+      if (bayesian.gate_passed?.count || bayesian.gate_blocked?.count) {
+        lines.push('### Confidence Gate')
+        if (bayesian.gate_passed?.count) {
+          lines.push(`- **Passed gate:** ${bayesian.gate_passed.count} trades, ${(bayesian.gate_passed.win_rate * 100).toFixed(0)}% win rate`)
+        }
+        if (bayesian.gate_blocked?.count) {
+          lines.push(`- **Blocked by gate:** ${bayesian.gate_blocked.count} trades, ${(bayesian.gate_blocked.potential_win_rate * 100).toFixed(0)}% would-won rate`)
+        }
+        lines.push('')
+      }
+
+      if (bayesian.fallback_mode?.count || bayesian.active_mode?.count) {
+        lines.push('### Bayesian Mode')
+        if (bayesian.fallback_mode?.count) {
+          lines.push(`- **Fallback (< min trades):** ${bayesian.fallback_mode.count} trades, ${(bayesian.fallback_mode.win_rate * 100).toFixed(0)}% win`)
+        }
+        if (bayesian.active_mode?.count) {
+          lines.push(`- **Active Bayesian:** ${bayesian.active_mode.count} trades, ${(bayesian.active_mode.win_rate * 100).toFixed(0)}% win`)
+        }
+        lines.push('')
+      }
+
+      if (bayesian.posterior_vs_pnl_correlation != null) {
+        lines.push(`**Posterior vs PnL Correlation:** ${bayesian.posterior_vs_pnl_correlation.toFixed(4)}`)
+        lines.push('')
+      }
+    }
+
+    // Threshold Analysis
+    const thresholds = analysis.threshold_analysis || {}
+    if (Object.keys(thresholds).length > 0) {
+      lines.push('## Buy Threshold Effectiveness')
+      lines.push('| Threshold | Trades Above | Win Rate | Avg PnL |')
+      lines.push('|-----------|--------------|----------|---------|')
+      for (const [thresh, d] of Object.entries(thresholds).sort()) {
+        lines.push(`| ${thresh} | ${d.trades_above} | ${(d.win_rate_above * 100).toFixed(0)}% | $${(d.avg_pnl_above || 0).toFixed(4)} |`)
+      }
+      lines.push('')
+    }
+
+    // Layer Weight Analysis
+    const layers = analysis.layer_weight_analysis || {}
+    if (Object.keys(layers).length > 0) {
+      lines.push('## Layer Weight Analysis')
+      if (layers.l1_direction_vs_pnl_correlation != null) {
+        lines.push(`- **L1 vs PnL Correlation:** ${layers.l1_direction_vs_pnl_correlation.toFixed(4)}`)
+      }
+      if (layers.l2_direction_vs_pnl_correlation != null) {
+        lines.push(`- **L2 vs PnL Correlation:** ${layers.l2_direction_vs_pnl_correlation.toFixed(4)}`)
+      }
+      if (layers.both_agree_trades?.count > 0) {
+        lines.push(`- **Layers Agree:** ${layers.both_agree_trades.count} trades, ${(layers.both_agree_trades.win_rate * 100).toFixed(0)}% win`)
+      }
+      if (layers.layers_disagree_trades?.count > 0) {
+        lines.push(`- **Layers Disagree:** ${layers.layers_disagree_trades.count} trades, ${(layers.layers_disagree_trades.win_rate * 100).toFixed(0)}% win`)
+      }
+      lines.push('')
+    }
+
+    // Time Patterns
+    const timePatterns = analysis.time_patterns || {}
+    if (timePatterns.hourly && Object.keys(timePatterns.hourly).length > 0) {
+      lines.push('## Time-of-Day Patterns')
+      if (timePatterns.best_hours?.length > 0) {
+        lines.push(`**Best Hours (UTC):** ${timePatterns.best_hours.join(', ')}`)
+      }
+      if (timePatterns.worst_hours?.length > 0) {
+        lines.push(`**Worst Hours (UTC):** ${timePatterns.worst_hours.join(', ')}`)
+      }
+      lines.push('')
+    }
+
+    // Hold Duration
+    const holdDuration = analysis.hold_duration || {}
+    if (holdDuration.duration_buckets && Object.keys(holdDuration.duration_buckets).length > 0) {
+      lines.push('## Hold Duration vs PnL')
+      lines.push('| Duration | Trades | Win Rate | Avg PnL |')
+      lines.push('|----------|--------|----------|---------|')
+      for (const [range, d] of Object.entries(holdDuration.duration_buckets)) {
+        lines.push(`| ${range} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+      }
+      lines.push('')
+    }
+
+    // Per-Bot Comparison
+    const perBot = analysis.per_bot || {}
+    if (Object.keys(perBot).length > 0) {
+      lines.push('## Per-Bot Comparison')
+      lines.push('| Bot | Trades | Win Rate | Total PnL |')
+      lines.push('|-----|--------|----------|-----------|')
+      for (const [id, d] of Object.entries(perBot)) {
+        lines.push(`| ${d.name} | ${d.total_trades} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.total_pnl || 0).toFixed(2)} |`)
+      }
+      lines.push('')
+    }
+
+    // Create and download the file
+    const markdown = lines.join('\n')
+    const blob = new Blob([markdown], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `trade-analysis-${new Date().toISOString().split('T')[0]}.md`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -154,7 +391,14 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
               <HoldDuration data={analysis.hold_duration} />
               <PerBotComparison data={analysis.per_bot} />
 
-              <div className="flex justify-end pt-2">
+              <div className="flex justify-between pt-2">
+                <button
+                  onClick={downloadAnalysisAsMarkdown}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono text-text-dim hover:text-text-secondary transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download as Markdown
+                </button>
                 <button
                   onClick={() => setStep(3)}
                   className="btn-green text-xs py-2 px-4 flex items-center gap-1"
