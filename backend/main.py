@@ -494,6 +494,73 @@ async def create_bot_from_analysis(
 
 
 # ============================================================
+#  BAYESIAN ENDPOINTS — likelihood table & posterior stats
+# ============================================================
+
+@app.get("/api/swarm/{bot_id}/bayesian/likelihood")
+async def get_bayesian_likelihood_table(bot_id: int):
+    """Get the Bayesian likelihood table for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    likelihood_table = db.get_all_bayesian_likelihoods(bot_id)
+    return {
+        "bot_id": bot_id,
+        "likelihood_table": likelihood_table,
+        "total_combinations": len(likelihood_table),
+    }
+
+
+@app.get("/api/swarm/{bot_id}/bayesian/stats")
+async def get_bayesian_stats(bot_id: int):
+    """Get Bayesian statistics for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    config = instance.get_config()
+    if not config.bayesian.enabled:
+        return {
+            "bot_id": bot_id,
+            "enabled": False,
+            "message": "Bayesian inference is disabled for this bot",
+        }
+    
+    total_trades = db.get_bot_trade_count(bot_id, limit=config.bayesian.rolling_window)
+    wins = db.get_bot_win_count(bot_id, limit=config.bayesian.rolling_window)
+    prior = (wins + config.bayesian.smoothing_alpha) / (total_trades + 2 * config.bayesian.smoothing_alpha) if total_trades > 0 else 0.5
+    
+    return {
+        "bot_id": bot_id,
+        "enabled": True,
+        "sufficient_data": total_trades >= config.bayesian.min_sample_size,
+        "total_trades": total_trades,
+        "wins": wins,
+        "prior": prior,
+        "min_sample_size": config.bayesian.min_sample_size,
+        "confidence_threshold": 0.4,
+        "rolling_window": config.bayesian.rolling_window,
+    }
+
+
+@app.post("/api/swarm/{bot_id}/bayesian/reset")
+async def reset_bayesian_likelihood(bot_id: int):
+    """Reset the Bayesian likelihood table for a specific bot."""
+    instance = swarm_manager.get_bot(bot_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    conn = db.get_connection()
+    conn.execute("DELETE FROM bayesian_likelihood WHERE bot_id = ?", (bot_id,))
+    conn.commit()
+    conn.close()
+    
+    logger.info(f"Bayesian likelihood table reset for bot {bot_id}")
+    return {"message": f"Bayesian likelihood table reset for bot {bot_id}", "bot_id": bot_id}
+
+
+# ============================================================
 #  LEGACY ENDPOINTS — backward compatibility (delegate to bot 1)
 # ============================================================
 

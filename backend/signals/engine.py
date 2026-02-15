@@ -17,6 +17,7 @@ from signals.btc_ta import compute_layer2_signal
 from signals.vwap_vroc import compute_vwap, compute_vroc
 from polymarket.client import polymarket_client
 from binance.client import binance_client
+from bayesian_manager import bin_l1_evidence, bin_l2_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +198,10 @@ class SignalEngine:
                 vwap_signal=vwap_signal,
                 vwap_band_position=vwap_data.get("band_position", 0.0),
                 vroc_enabled=config.vroc_enabled,
-                vroc_value=vroc_data.get("vroc", 0.0),
+                vroc_value=vwap_data.get("vroc", 0.0),
                 vroc_confirmed=True,
+                l1_evidence=bin_l1_evidence(layer1.direction),
+                l2_evidence=bin_l2_evidence(layer2.direction),
             )
 
         # If one core layer has zero confidence, redistribute its weight
@@ -286,6 +289,9 @@ class SignalEngine:
             vroc_enabled=config.vroc_enabled,
             vroc_value=vroc_pct,
             vroc_confirmed=vroc_confirmed,
+            # Bayesian evidence categories
+            l1_evidence=bin_l1_evidence(layer1.direction),
+            l2_evidence=bin_l2_evidence(layer2.direction),
         )
 
 

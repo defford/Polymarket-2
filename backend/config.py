@@ -125,6 +125,18 @@ class TradingConfig:
 
 
 @dataclass
+class BayesianConfig:
+    """Bayesian signal weighting parameters."""
+    
+    enabled: bool = True
+    rolling_window: int = 100
+    min_sample_size: int = 50
+    default_confidence: float = 0.5
+    confidence_threshold: float = 0.4
+    smoothing_alpha: float = 0.1
+
+
+@dataclass
 class BotConfig:
     """Top-level bot configuration."""
 
@@ -132,6 +144,7 @@ class BotConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     exit: ExitConfig = field(default_factory=ExitConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    bayesian: BayesianConfig = field(default_factory=BayesianConfig)
     mode: str = "dry_run"  # "dry_run" or "live"
 
     def to_dict(self) -> dict:
@@ -144,6 +157,7 @@ class BotConfig:
             risk=RiskConfig(**data.get("risk", {})),
             exit=ExitConfig(**data.get("exit", {})),
             trading=TradingConfig(**data.get("trading", {})),
+            bayesian=BayesianConfig(**data.get("bayesian", {})),
             mode=data.get("mode", "dry_run"),
         )
 

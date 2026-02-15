@@ -49,6 +49,7 @@ class TradingEngine:
         pm_client=None,
         btc_client=None,
         bot_id=None,
+        bayesian_mgr=None,
     ):
         # Dependency injection (None = use global singletons for backward compat)
         self._config_mgr = config_mgr
@@ -60,6 +61,7 @@ class TradingEngine:
         self._pm_client = pm_client
         self._btc_client = btc_client
         self._bot_id = bot_id
+        self._bayesian_mgr = bayesian_mgr
 
         self._status = BotStatus.STOPPED
         self._running = False
@@ -235,6 +237,28 @@ class TradingEngine:
                 # Step 4: Compute signals
                 composite_signal = self._signals.compute_signal(market)
                 self._last_signal = composite_signal
+
+                # Step 4.5: Bayesian posterior calculation
+                if self._cfg.config.bayesian.enabled and self._bayesian_mgr:
+                    bayes_result = self._bayesian_mgr.compute_posterior(
+                        composite_signal.l1_evidence,
+                        composite_signal.l2_evidence,
+                    )
+                    composite_signal.bayesian_posterior = bayes_result['posterior']
+                    composite_signal.bayesian_confidence_gate = bayes_result['confidence_gate']
+                    composite_signal.bayesian_fallback = bayes_result['fallback']
+                    
+                    if not bayes_result['confidence_gate']:
+                        logger.info(
+                            f"🚫 Bayesian gate BLOCKED: posterior={bayes_result['posterior']:.2f} "
+                            f"(threshold=0.4) l1={composite_signal.l1_evidence} l2={composite_signal.l2_evidence}"
+                        )
+                    elif not bayes_result['fallback']:
+                        logger.info(
+                            f"📊 Bayesian POSTERIOR: {bayes_result['posterior']:.2f} "
+                            f"(prior={bayes_result['prior']:.2f}) "
+                            f"l1={composite_signal.l1_evidence} l2={composite_signal.l2_evidence}"
+                        )
 
                 # Step 5: Check risk and maybe trade
                 await self._maybe_trade(market, composite_signal)
@@ -446,6 +470,15 @@ class TradingEngine:
                     f"💰 Early exit ({reason_category}): "
                     f"P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}"
                 )
+                
+                # Record Bayesian outcome
+                if self._cfg.config.bayesian.enabled and self._bayesian_mgr and self._last_signal:
+                    won = pnl > 0
+                    self._bayesian_mgr.record_outcome(
+                        self._last_signal.l1_evidence,
+                        self._last_signal.l2_evidence,
+                        won,
+                    )
 
     async def _ensure_active_market(self) -> Optional[MarketInfo]:
         """
@@ -746,6 +779,15 @@ class TradingEngine:
             self._risk.record_trade_result(pnl, old_condition_id)
             self._total_pnl += pnl
             logger.info(f"💰 Position resolved: P&L = ${pnl:.2f} | Total: ${self._total_pnl:.2f}")
+            
+            # Record Bayesian outcome
+            if self._cfg.config.bayesian.enabled and self._bayesian_mgr and self._last_signal:
+                won = pnl > 0
+                self._bayesian_mgr.record_outcome(
+                    self._last_signal.l1_evidence,
+                    self._last_signal.l2_evidence,
+                    won,
+                )
 
     async def _maybe_trade(self, market: MarketInfo, signal: CompositeSignal):
         """Check risk rules and place trade if appropriate."""
@@ -755,6 +797,14 @@ class TradingEngine:
         allowed, reason = self._risk.can_trade(signal, market.condition_id)
         if not allowed:
             logger.debug(f"Trade blocked: {reason}")
+            return
+
+        # Bayesian confidence gate check
+        if config.bayesian.enabled and not signal.bayesian_confidence_gate:
+            logger.info(
+                f"🚫 Trade blocked by Bayesian confidence gate: "
+                f"posterior={signal.bayesian_posterior:.2f} < threshold=0.4"
+            )
             return
 
         # Price Ceiling Check — prevent buying the top

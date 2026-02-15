@@ -78,5 +78,13 @@
     "market_discovery_interval_seconds": 30,
     "max_order_retries": 30
   },
+  "bayesian": {
+    "enabled": true,
+    "rolling_window": 100,
+    "min_sample_size": 50,
+    "default_confidence": 0.5,
+    "confidence_threshold": 0.4,
+    "smoothing_alpha": 0.1
+  },
   "mode": "dry_run"
 }

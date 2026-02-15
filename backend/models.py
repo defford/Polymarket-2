@@ -111,6 +111,15 @@ class CompositeSignal(BaseModel):
     vroc_value: float = 0.0                 # VROC percentage
     vroc_confirmed: bool = True             # True if VROC >= threshold (or disabled)
 
+    # Bayesian evidence categories
+    l1_evidence: str = "L1_NEUTRAL"
+    l2_evidence: str = "L2_NEUTRAL"
+
+    # Bayesian posterior results
+    bayesian_posterior: Optional[float] = None
+    bayesian_confidence_gate: bool = True
+    bayesian_fallback: bool = False
+
 
 # --- Trade Models ---
 
@@ -215,6 +224,7 @@ class ConfigUpdateRequest(BaseModel):
     risk: Optional[dict] = None
     trading: Optional[dict] = None
     exit: Optional[dict] = None
+    bayesian: Optional[dict] = None
     mode: Optional[str] = None
 
 

@@ -95,6 +95,14 @@ class RiskManager:
         if not signal.should_trade:
             return False, "Signal below threshold"
 
+        # Log Bayesian state if available
+        if hasattr(signal, 'bayesian_posterior') and signal.bayesian_posterior is not None:
+            logger.debug(
+                f"Bayesian: posterior={signal.bayesian_posterior:.2f} "
+                f"gate={'PASS' if signal.bayesian_confidence_gate else 'FAIL'} "
+                f"fallback={signal.bayesian_fallback}"
+            )
+
         return True, "OK"
 
     def get_position_size(self) -> float:

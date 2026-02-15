@@ -110,6 +110,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: Add l1_evidence column to trades
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN l1_evidence TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: Add l2_evidence column to trades
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN l2_evidence TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # Create indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_bot ON trades(bot_id)")
@@ -687,5 +699,124 @@ def get_analysis_run(run_id: int) -> Optional[dict]:
     return None
 
 
+# --- Bayesian Likelihood Operations ---
+
+def init_bayesian_table():
+    """Create bayesian_likelihood table."""
+    conn = get_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bayesian_likelihood (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id INTEGER NOT NULL,
+            l1_evidence TEXT NOT NULL,
+            l2_evidence TEXT NOT NULL,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            total INTEGER DEFAULT 0,
+            win_rate REAL DEFAULT 0.0,
+            last_updated TEXT NOT NULL,
+            UNIQUE(bot_id, l1_evidence, l2_evidence),
+            FOREIGN KEY (bot_id) REFERENCES bots(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bayesian_likelihood_bot ON bayesian_likelihood(bot_id)")
+    conn.commit()
+    conn.close()
+
+
+def get_bayesian_likelihood(bot_id: int, l1_evidence: str, l2_evidence: str) -> Optional[dict]:
+    """Get likelihood row for a specific evidence combination."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT wins, losses, total, win_rate FROM bayesian_likelihood
+           WHERE bot_id = ? AND l1_evidence = ? AND l2_evidence = ?""",
+        (bot_id, l1_evidence, l2_evidence),
+    ).fetchone()
+    conn.close()
+    if row:
+        return {
+            'wins': row['wins'],
+            'losses': row['losses'],
+            'total': row['total'],
+            'win_rate': row['win_rate'],
+        }
+    return None
+
+
+def update_bayesian_likelihood(bot_id: int, l1_evidence: str, l2_evidence: str, won: bool):
+    """Increment wins/losses for an evidence combination."""
+    conn = get_connection()
+    now = datetime.utcnow().isoformat()
+    
+    try:
+        conn.execute(
+            """INSERT INTO bayesian_likelihood (bot_id, l1_evidence, l2_evidence, wins, losses, total, win_rate, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (bot_id, l1_evidence, l2_evidence, 1 if won else 0, 0 if won else 1, 1, 1.0 if won else 0.0, now),
+        )
+    except sqlite3.IntegrityError:
+        if won:
+            conn.execute(
+                """UPDATE bayesian_likelihood 
+                   SET wins = wins + 1, total = total + 1, 
+                       win_rate = CAST(wins + 1 AS REAL) / (total + 1),
+                       last_updated = ?
+                   WHERE bot_id = ? AND l1_evidence = ? AND l2_evidence = ?""",
+                (now, bot_id, l1_evidence, l2_evidence),
+            )
+        else:
+            conn.execute(
+                """UPDATE bayesian_likelihood 
+                   SET losses = losses + 1, total = total + 1,
+                       win_rate = CAST(wins AS REAL) / (total + 1),
+                       last_updated = ?
+                   WHERE bot_id = ? AND l1_evidence = ? AND l2_evidence = ?""",
+                (now, bot_id, l1_evidence, l2_evidence),
+            )
+    
+    conn.commit()
+    conn.close()
+
+
+def get_bot_trade_count(bot_id: int, limit: int = 100) -> int:
+    """Get count of filled trades for a bot (up to limit)."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT COUNT(*) as cnt FROM (
+           SELECT id FROM trades WHERE bot_id = ? AND status = 'filled' 
+           ORDER BY timestamp DESC LIMIT ?
+        )""",
+        (bot_id, limit),
+    ).fetchone()
+    conn.close()
+    return row['cnt'] if row else 0
+
+
+def get_bot_win_count(bot_id: int, limit: int = 100) -> int:
+    """Get count of winning trades for a bot (up to limit)."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT COUNT(*) as cnt FROM (
+           SELECT id FROM trades WHERE bot_id = ? AND status = 'filled' AND pnl > 0
+           ORDER BY timestamp DESC LIMIT ?
+        )""",
+        (bot_id, limit),
+    ).fetchone()
+    conn.close()
+    return row['cnt'] if row else 0
+
+
+def get_all_bayesian_likelihoods(bot_id: int) -> list[dict]:
+    """Get all likelihood rows for a bot (for API/debugging)."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT * FROM bayesian_likelihood WHERE bot_id = ? ORDER BY total DESC""",
+        (bot_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # Initialize on import
 init_db()
+init_bayesian_table()

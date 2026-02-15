@@ -74,6 +74,7 @@ class BotInstance:
         self._market_discovery = None
         self._market_stream = None
         self._trading_engine = None
+        self._bayesian_manager = None
 
     def _ensure_components(self):
         """Create per-bot component instances (called once before start)."""
@@ -86,6 +87,7 @@ class BotInstance:
         from polymarket.markets import MarketDiscovery
         from polymarket.stream import MarketDataStream
         from trading.engine import TradingEngine
+        from bayesian_manager import BayesianManager
 
         self._signal_engine = SignalEngine(
             config_mgr=self.config_manager,
@@ -99,6 +101,10 @@ class BotInstance:
         )
         self._market_discovery = MarketDiscovery()
         self._market_stream = MarketDataStream()
+        self._bayesian_manager = BayesianManager(
+            bot_id=self.bot_id,
+            config=self.config_manager.config.bayesian,
+        )
         self._trading_engine = TradingEngine(
             config_mgr=self.config_manager,
             sig_engine=self._signal_engine,
@@ -109,6 +115,7 @@ class BotInstance:
             pm_client=self._polymarket_client,
             btc_client=self._binance_client,
             bot_id=self.bot_id,
+            bayesian_mgr=self._bayesian_manager,
         )
 
     def set_ws_broadcast(self, fn):
