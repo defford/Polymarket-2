@@ -285,6 +285,8 @@ class TradingEngine:
                                 market.condition_id,
                                 exit_decision["reason"],
                                 exit_decision["reason_category"],
+                                effective_trailing_pct=exit_decision.get("effective_trailing_pct"),
+                                time_zone=exit_decision.get("time_zone"),
                             )
 
                 # Step 7: Broadcast state via WebSocket
@@ -386,7 +388,11 @@ class TradingEngine:
                                 f"effective={base_trailing:.1%} [{time_zone}] (WS fast-check)"
                             )
                             logger.info(f"🛑 FAST EXIT -- {reason}")
-                            await self._execute_exit(condition_id, reason, "trailing_stop")
+                            await self._execute_exit(
+                                condition_id, reason, "trailing_stop",
+                                effective_trailing_pct=base_trailing,
+                                time_zone=time_zone,
+                            )
                             exited = True
                             break
 
@@ -430,7 +436,14 @@ class TradingEngine:
     # Shared exit execution helper
     # ------------------------------------------------------------------
 
-    async def _execute_exit(self, condition_id: str, reason: str, reason_category: str):
+    async def _execute_exit(
+        self,
+        condition_id: str,
+        reason: str,
+        reason_category: str,
+        effective_trailing_pct: Optional[float] = None,
+        time_zone: Optional[str] = None,
+    ):
         """
         Execute a position exit.  Shared by both the fast and slow loops.
 
@@ -462,6 +475,8 @@ class TradingEngine:
                 reason=reason,
                 is_dry_run=is_dry,
                 sell_state_snapshot=sell_state,
+                effective_trailing_pct=effective_trailing_pct,
+                time_zone=time_zone,
             )
             if pnl is not None:
                 self._risk.record_trade_result(pnl, condition_id)
@@ -515,22 +530,45 @@ class TradingEngine:
 
     @staticmethod
     def compute_orderbook_imbalance(orderbook: dict) -> dict:
-        """Compute bid/ask volume imbalance and spread from an order book."""
+        """
+        Compute bid/ask volume imbalance and spread from an order book.
+        
+        Enhanced to include top-10 depth for survival analysis.
+        """
         bids = orderbook.get("bids", [])
         asks = orderbook.get("asks", [])
 
-        bid_vol = sum(float(b.get("size", 0)) for b in bids[:5])
-        ask_vol = sum(float(a.get("size", 0)) for a in asks[:5])
-        total = bid_vol + ask_vol
+        # Top 5 levels (existing)
+        bid_vol_5 = sum(float(b.get("size", 0)) for b in bids[:5])
+        ask_vol_5 = sum(float(a.get("size", 0)) for a in asks[:5])
+        total_5 = bid_vol_5 + ask_vol_5
+
+        # Top 10 levels (new)
+        bid_vol_10 = sum(float(b.get("size", 0)) for b in bids[:10])
+        ask_vol_10 = sum(float(a.get("size", 0)) for a in asks[:10])
+        total_10 = bid_vol_10 + ask_vol_10
 
         best_bid = float(bids[0]["price"]) if bids else 0
         best_ask = float(asks[0]["price"]) if asks else 0
+        
+        # Spread in basis points
+        spread = (best_ask - best_bid) if best_bid and best_ask else 0
+        spread_bps = (spread / best_bid * 10000) if best_bid > 0 else 0
+        
+        # Depth ratio: bid/ask (values > 1 = more bid liquidity)
+        depth_ratio = (bid_vol_10 / ask_vol_10) if ask_vol_10 > 0 else 0
 
         return {
-            "bid_volume_top5": round(bid_vol, 2),
-            "ask_volume_top5": round(ask_vol, 2),
-            "imbalance": round((bid_vol - ask_vol) / total, 4) if total > 0 else 0,
-            "spread": round(best_ask - best_bid, 4) if best_bid and best_ask else 0,
+            "bid_volume_top5": round(bid_vol_5, 2),
+            "ask_volume_top5": round(ask_vol_5, 2),
+            "bid_volume_top10": round(bid_vol_10, 2),
+            "ask_volume_top10": round(ask_vol_10, 2),
+            "imbalance": round((bid_vol_5 - ask_vol_5) / total_5, 4) if total_5 > 0 else 0,
+            "imbalance_top10": round((bid_vol_10 - ask_vol_10) / total_10, 4) if total_10 > 0 else 0,
+            "spread": round(spread, 4),
+            "spread_bps": round(spread_bps, 2),
+            "depth_ratio": round(depth_ratio, 4),
+            "liquidity_score": round(total_10, 2),
             "best_bid": best_bid,
             "best_ask": best_ask,
         }

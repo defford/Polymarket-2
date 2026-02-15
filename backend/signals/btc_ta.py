@@ -262,3 +262,104 @@ def compute_layer2_signal(
         direction=float(np.clip(direction, -1.0, 1.0)),
         confidence=float(np.clip(confidence, 0.0, 1.0)),
     )
+
+
+def compute_atr(df: pd.DataFrame, period: int = 14) -> dict:
+    """
+    Compute Average True Range (ATR) for volatility measurement.
+    
+    ATR measures market volatility by decomposing the entire range of price movement.
+    For 15-minute binary markets, ATR helps identify:
+    - High-noise environments where stops are more likely to be triggered
+    - Low-volatility conditions where price movement may be insufficient
+    
+    Args:
+        df: DataFrame with 'high', 'low', 'close' columns
+        period: ATR smoothing period (default 14)
+    
+    Returns:
+        dict with:
+            - atr_value: Raw ATR in price units
+            - atr_percent: ATR as percentage of current price
+            - atr_normalized_bps: ATR in basis points
+            - volatility_regime: 'low', 'medium', 'high', or 'extreme'
+            - true_range_latest: Most recent True Range value
+    """
+    if df is None or df.empty or len(df) < period + 1:
+        return {
+            "atr_value": None,
+            "atr_percent": None,
+            "atr_normalized_bps": None,
+            "volatility_regime": None,
+            "true_range_latest": None,
+        }
+    
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    
+    if len(high) < 2:
+        return {
+            "atr_value": None,
+            "atr_percent": None,
+            "atr_normalized_bps": None,
+            "volatility_regime": None,
+            "true_range_latest": None,
+        }
+    
+    # Calculate True Range
+    # TR = max(high - low, |high - prev_close|, |low - prev_close|)
+    prev_close = close.shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # ATR is EMA of True Range
+    atr_series = true_range.ewm(alpha=1/period, adjust=False).mean()
+    atr_value = atr_series.iloc[-1]
+    
+    current_price = close.iloc[-1]
+    
+    # ATR as percentage of price
+    atr_percent = atr_value / current_price if current_price > 0 else 0
+    
+    # ATR in basis points
+    atr_bps = atr_percent * 10000
+    
+    # Classify volatility regime based on ATR percentile
+    # Using historical ATR distribution to classify
+    atr_history = atr_series.dropna().tail(100)  # Last 100 periods
+    if len(atr_history) >= 20:
+        pct_25 = atr_history.quantile(0.25)
+        pct_50 = atr_history.quantile(0.50)
+        pct_75 = atr_history.quantile(0.75)
+        
+        if atr_value <= pct_25:
+            regime = "low"
+        elif atr_value <= pct_50:
+            regime = "medium"
+        elif atr_value <= pct_75:
+            regime = "high"
+        else:
+            regime = "extreme"
+    else:
+        # Fallback: use fixed percentages
+        if atr_percent < 0.002:  # < 0.2%
+            regime = "low"
+        elif atr_percent < 0.004:  # < 0.4%
+            regime = "medium"
+        elif atr_percent < 0.006:  # < 0.6%
+            regime = "high"
+        else:
+            regime = "extreme"
+    
+    return {
+        "atr_value": float(atr_value),
+        "atr_percent": float(atr_percent),
+        "atr_normalized_bps": float(atr_bps),
+        "volatility_regime": regime,
+        "true_range_latest": float(true_range.iloc[-1]),
+    }

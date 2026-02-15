@@ -484,6 +484,67 @@ def build_analysis_prompt(analysis: dict, goal: str, base_config: dict) -> str:
             sections.append(f"Posterior vs PnL correlation: {corr:.4f}")
             sections.append("")
 
+    # Survival Analysis
+    survival = analysis.get("survival", {})
+    if survival and any(survival.values()):
+        sections.append("### 15-Minute Survival Analysis")
+        
+        # ATR at entry
+        atr = survival.get("atr_at_entry", {})
+        if atr:
+            sections.append("#### Volatility Context (ATR at Entry)")
+            sections.append("| ATR Regime | Trades | Win Rate | Avg PnL |")
+            sections.append("|------------|--------|----------|---------|")
+            for regime in ["low", "medium", "high", "extreme", "unknown"]:
+                if regime in atr:
+                    d = atr[regime]
+                    sections.append(f"| {regime} | {d['count']} | {d['win_rate']:.0%} | ${d['avg_pnl']:.4f} |")
+            sections.append("")
+        
+        # Survival margin distribution
+        margins = survival.get("survival_margin_distribution", {})
+        if margins:
+            sections.append("#### Survival Margin Distribution")
+            sections.append(f"- **Avg Survival Margin:** {margins.get('avg_bps', 0):.1f} BPS")
+            sections.append(f"- **Median:** {margins.get('median_bps', 0):.1f} BPS | **Min:** {margins.get('min_bps', 0):.1f} | **Max:** {margins.get('max_bps', 0):.1f}")
+            sections.append("")
+        
+        # Near-miss winners
+        near_miss = survival.get("near_miss_winners", {})
+        if near_miss.get("count", 0) > 0:
+            sections.append("#### Near-Miss Winners")
+            sections.append(f"- **Count:** {near_miss['count']} trades won by < 20% margin")
+            sections.append(f"- **Total PnL:** ${near_miss.get('total_pnl', 0):.2f}")
+            sections.append("")
+        
+        # Stop efficiency by time zone
+        timezone = survival.get("stop_efficiency_by_timezone", {})
+        if timezone:
+            sections.append("#### Stop Efficiency by Time Zone")
+            sections.append("| Time Zone | Trades | Win Rate | Avg Margin |")
+            sections.append("|-----------|--------|----------|------------|")
+            for tz, d in timezone.items():
+                sections.append(f"| {tz} | {d['count']} | {d['win_rate']:.0%} | {d['avg_survival_margin_bps']:.1f} BPS |")
+            sections.append("")
+        
+        # Layer disagreement impact
+        disagreement = survival.get("layer_disagreement_impact", {})
+        if disagreement:
+            sections.append("#### Layer Disagreement Impact")
+            sections.append("| Conflict Source | Occurrences | Win Rate | Avg PnL |")
+            sections.append("|-----------------|-------------|----------|---------|")
+            for key, d in list(disagreement.items())[:6]:
+                sections.append(f"| {key} | {d['count']} | {d['win_rate']:.0%} | ${d['avg_pnl']:.4f} |")
+            sections.append("")
+        
+        # Liquidity at trailing stop
+        liquidity = survival.get("liquidity_at_trailing_stop", {})
+        if liquidity:
+            sections.append("#### Liquidity at Trailing Stop Exit")
+            sections.append(f"- **Avg Spread:** {liquidity.get('avg_spread_bps', 0):.1f} BPS")
+            sections.append(f"- **Avg Depth Ratio:** {liquidity.get('avg_depth_ratio', 0):.4f}")
+            sections.append("")
+
     # Section 3: Optimization Goal
     goal_desc = OPTIMIZATION_GOALS.get(goal, OPTIMIZATION_GOALS["balanced"])
     sections.append(f"## Optimization Goal: {goal}\n")

@@ -231,6 +231,78 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
       }
     }
 
+    // Survival Analysis
+    const survival = analysis.survival || {}
+    if (Object.keys(survival).length > 0) {
+      lines.push('## 15-Minute Survival Analysis')
+      
+      // ATR at entry
+      const atr = survival.atr_at_entry || {}
+      if (Object.keys(atr).length > 0) {
+        lines.push('### Volatility Context (ATR at Entry)')
+        lines.push('| ATR Regime | Trades | Win Rate | Avg PnL |')
+        lines.push('|------------|--------|----------|---------|')
+        for (const regime of ['low', 'medium', 'high', 'extreme', 'unknown']) {
+          if (atr[regime]) {
+            const d = atr[regime]
+            lines.push(`| ${regime} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+          }
+        }
+        lines.push('')
+      }
+      
+      // Survival margin distribution
+      const margins = survival.survival_margin_distribution || {}
+      if (margins.count) {
+        lines.push('### Survival Margin Distribution')
+        lines.push(`- **Avg Survival Margin:** ${margins.avg_bps || 0} BPS`)
+        lines.push(`- **Median:** ${margins.median_bps || 0} BPS | **Min:** ${margins.min_bps || 0} | **Max:** ${margins.max_bps || 0}`)
+        lines.push('')
+      }
+      
+      // Near-miss winners
+      const nearMiss = survival.near_miss_winners || {}
+      if (nearMiss.count > 0) {
+        lines.push('### Near-Miss Winners')
+        lines.push(`- **Count:** ${nearMiss.count} trades won by < 20% margin`)
+        lines.push(`- **Total PnL:** $${(nearMiss.total_pnl || 0).toFixed(2)}`)
+        lines.push('')
+      }
+      
+      // Stop efficiency by time zone
+      const timezone = survival.stop_efficiency_by_timezone || {}
+      if (Object.keys(timezone).length > 0) {
+        lines.push('### Stop Efficiency by Time Zone')
+        lines.push('| Time Zone | Trades | Win Rate | Avg Margin |')
+        lines.push('|-----------|--------|----------|------------|')
+        for (const [tz, d] of Object.entries(timezone)) {
+          lines.push(`| ${tz} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | ${d.avg_survival_margin_bps || 0} BPS |`)
+        }
+        lines.push('')
+      }
+      
+      // Layer disagreement impact
+      const disagreement = survival.layer_disagreement_impact || {}
+      if (Object.keys(disagreement).length > 0) {
+        lines.push('### Layer Disagreement Impact')
+        lines.push('| Conflict Source | Occurrences | Win Rate | Avg PnL |')
+        lines.push('|-----------------|-------------|----------|---------|')
+        for (const [key, d] of Object.entries(disagreement).slice(0, 6)) {
+          lines.push(`| ${key} | ${d.count} | ${(d.win_rate * 100).toFixed(0)}% | $${(d.avg_pnl || 0).toFixed(4)} |`)
+        }
+        lines.push('')
+      }
+      
+      // Liquidity at trailing stop
+      const liquidity = survival.liquidity_at_trailing_stop || {}
+      if (liquidity.count) {
+        lines.push('### Liquidity at Trailing Stop Exit')
+        lines.push(`- **Avg Spread:** ${liquidity.avg_spread_bps || 0} BPS`)
+        lines.push(`- **Avg Depth Ratio:** ${(liquidity.avg_depth_ratio || 0).toFixed(4)}`)
+        lines.push('')
+      }
+    }
+
     // Threshold Analysis
     const thresholds = analysis.threshold_analysis || {}
     if (Object.keys(thresholds).length > 0) {
@@ -385,6 +457,7 @@ export default function AnalysisPanel({ bots, onClose, onCreated }) {
               <FillRateAnalysis data={analysis.fill_rate} />
               <OrderbookAnalysis data={analysis.orderbook} />
               <BayesianAnalysis data={analysis.bayesian} />
+              <SurvivalAnalysis data={analysis.survival} />
               <ThresholdAnalysis data={analysis.threshold_analysis} />
               <LayerAnalysis data={analysis.layer_weight_analysis} />
               <TimePatterns data={analysis.time_patterns} />
@@ -1140,6 +1213,157 @@ function BayesianAnalysis({ data }) {
           <div className="data-row">
             <span className="data-label">Posterior vs PnL Correlation</span>
             <span className="data-value">{data.posterior_vs_pnl_correlation?.toFixed(4)}</span>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
+  )
+}
+
+function SurvivalAnalysis({ data }) {
+  if (!data || Object.keys(data).length === 0) return null
+  return (
+    <CollapsibleSection title="15-Minute Survival Analysis">
+      <div className="space-y-3">
+        {/* ATR at Entry */}
+        {data.atr_at_entry && Object.keys(data.atr_at_entry).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1">Volatility Context (ATR at Entry)</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Regime</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {['low', 'medium', 'high', 'extreme'].map(regime => 
+                  data.atr_at_entry[regime] && (
+                    <tr key={regime} className="border-t border-surface-2">
+                      <td className="py-1 text-text-secondary">{regime}</td>
+                      <td className="py-1 text-right text-text-dim">{data.atr_at_entry[regime].count}</td>
+                      <td className={`py-1 text-right ${data.atr_at_entry[regime].win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                        {(data.atr_at_entry[regime].win_rate * 100).toFixed(0)}%
+                      </td>
+                      <td className={`py-1 text-right ${data.atr_at_entry[regime].avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                        ${data.atr_at_entry[regime].avg_pnl?.toFixed(4)}
+                      </td>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Survival Margin Distribution */}
+        {data.survival_margin_distribution?.count > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Survival Margin Distribution</div>
+            <div className="space-y-1">
+              <div className="data-row">
+                <span className="data-label">Avg Margin</span>
+                <span className="data-value">{data.survival_margin_distribution.avg_bps} BPS</span>
+              </div>
+              <div className="data-row">
+                <span className="data-label">Range</span>
+                <span className="data-value text-text-dim">
+                  {data.survival_margin_distribution.min_bps} - {data.survival_margin_distribution.max_bps} BPS
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Near-Miss Winners */}
+        {data.near_miss_winners?.count > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Near-Miss Winners</div>
+            <div className="data-row">
+              <span className="data-label">Won by &lt;20% margin</span>
+              <span className="data-value text-accent-yellow">
+                {data.near_miss_winners.count} trades, ${(data.near_miss_winners.total_pnl || 0).toFixed(2)} total
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Stop Efficiency by Time Zone */}
+        {data.stop_efficiency_by_timezone && Object.keys(data.stop_efficiency_by_timezone).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Stop Efficiency by Time Zone</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Zone</th>
+                  <th className="text-right pb-1">Trades</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg Margin</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.stop_efficiency_by_timezone).map(([tz, d]) => (
+                  <tr key={tz} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary">{tz}</td>
+                    <td className="py-1 text-right text-text-dim">{d.count}</td>
+                    <td className={`py-1 text-right ${d.win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className="py-1 text-right text-text-dim">{d.avg_survival_margin_bps} BPS</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Layer Disagreement Impact */}
+        {data.layer_disagreement_impact && Object.keys(data.layer_disagreement_impact).length > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Layer Disagreement Impact</div>
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-text-dim text-2xs">
+                  <th className="text-left pb-1">Conflict Source</th>
+                  <th className="text-right pb-1">Count</th>
+                  <th className="text-right pb-1">Win Rate</th>
+                  <th className="text-right pb-1">Avg PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(data.layer_disagreement_impact).slice(0, 5).map(([key, d]) => (
+                  <tr key={key} className="border-t border-surface-2">
+                    <td className="py-1 text-text-secondary text-2xs">{key}</td>
+                    <td className="py-1 text-right text-text-dim">{d.count}</td>
+                    <td className={`py-1 text-right ${d.win_rate >= 0.5 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {(d.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className={`py-1 text-right ${d.avg_pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                      ${d.avg_pnl?.toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Liquidity at Trailing Stop */}
+        {data.liquidity_at_trailing_stop?.count > 0 && (
+          <div>
+            <div className="text-2xs font-mono text-text-dim uppercase tracking-wider mb-1 mt-2">Liquidity at Trailing Stop Exit</div>
+            <div className="space-y-1">
+              <div className="data-row">
+                <span className="data-label">Avg Spread</span>
+                <span className="data-value">{data.liquidity_at_trailing_stop.avg_spread_bps} BPS</span>
+              </div>
+              <div className="data-row">
+                <span className="data-label">Avg Depth Ratio</span>
+                <span className="data-value">{data.liquidity_at_trailing_stop.avg_depth_ratio?.toFixed(4)}</span>
+              </div>
+            </div>
           </div>
         )}
       </div>

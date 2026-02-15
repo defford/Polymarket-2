@@ -89,6 +89,7 @@ class AnalysisEngine:
             "fill_rate": self._fill_rate_analysis(trades_with_log),
             "orderbook": self._orderbook_analysis(trades_with_log),
             "bayesian": self._bayesian_analysis(trades_with_log),
+            "survival": self._survival_analysis(trades_with_log),
             "trade_count": total_trades,
             "session_count": len(session_ids),
         }
@@ -966,6 +967,176 @@ class AnalysisEngine:
                 "win_rate": round(active_mode["wins"] / active_mode["count"], 4) if active_mode["count"] else 0,
                 "avg_pnl": round(active_mode["total_pnl"] / active_mode["count"], 4) if active_mode["count"] else 0,
             },
+        }
+
+    # ------------------------------------------------------------------
+    # 17. 15-Minute Survival Analysis
+    # ------------------------------------------------------------------
+
+    def _survival_analysis(self, trades: list[dict]) -> dict:
+        """
+        Analyze why trades survive or fail within their 15-minute window.
+        
+        Key questions:
+        1. Are we entering in high-volatility environments (ATR)?
+        2. Are stops too tight relative to natural price movement (MAE vs stop)?
+        3. Does exit liquidity correlate with slippage?
+        4. When layers disagree, which L2 TF causes the most damage?
+        """
+        # ATR buckets
+        atr_buckets = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0})
+        
+        # Survival margin tracking
+        survival_margins = []
+        near_miss_winners = {"count": 0, "total_pnl": 0.0}
+        
+        # Stop efficiency by time zone
+        stop_by_timezone = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0, "margins": []})
+        
+        # Layer disagreement impact
+        disagreement_impact = defaultdict(lambda: {"count": 0, "wins": 0, "total_pnl": 0.0})
+        
+        # Liquidity at exit (for trailing_stop exits)
+        liquidity_at_stop = {"total_spread_bps": 0.0, "total_depth_ratio": 0.0, "count": 0}
+        
+        has_data = False
+        for t in trades:
+            ld = t["log_data"]
+            pnl = t["trade"].pnl or 0
+            won = pnl > 0
+            
+            # 1. Volatility (ATR) analysis
+            volatility = ld.get("volatility", {})
+            atr_bps = volatility.get("atr_normalized_bps")
+            regime = volatility.get("volatility_regime", "unknown")
+            if atr_bps is not None:
+                has_data = True
+                # Bucket by ATR regime
+                atr_buckets[regime]["count"] += 1
+                atr_buckets[regime]["total_pnl"] += pnl
+                if won:
+                    atr_buckets[regime]["wins"] += 1
+            
+            # 2. Survival buffer analysis
+            survival = ld.get("survival_analysis", {})
+            if survival:
+                has_data = True
+                margin = survival.get("survival_margin_bps")
+                time_zone = survival.get("time_zone", "unknown")
+                
+                if margin is not None:
+                    survival_margins.append(margin)
+                    
+                    # Track by time zone
+                    stop_by_timezone[time_zone]["count"] += 1
+                    stop_by_timezone[time_zone]["total_pnl"] += pnl
+                    stop_by_timezone[time_zone]["margins"].append(margin)
+                    if won:
+                        stop_by_timezone[time_zone]["wins"] += 1
+                
+                # Near-miss winners
+                if survival.get("near_miss_winner"):
+                    near_miss_winners["count"] += 1
+                    near_miss_winners["total_pnl"] += pnl
+            
+            # 3. Layer disagreement impact
+            disagreement = ld.get("layer_disagreement", {})
+            if disagreement and not disagreement.get("agreement", True):
+                has_data = True
+                dominant_tf = disagreement.get("dominant_conflict_tf", "unknown")
+                vroc_conflict = disagreement.get("vroc_conflict", False)
+                
+                # Track dominant TF conflicts
+                key = f"L2_{dominant_tf}_conflict" if dominant_tf else "L2_unknown_conflict"
+                disagreement_impact[key]["count"] += 1
+                disagreement_impact[key]["total_pnl"] += pnl
+                if won:
+                    disagreement_impact[key]["wins"] += 1
+                
+                # Track VROC conflicts separately
+                if vroc_conflict:
+                    disagreement_impact["VROC_unconfirmed"]["count"] += 1
+                    disagreement_impact["VROC_unconfirmed"]["total_pnl"] += pnl
+                    if won:
+                        disagreement_impact["VROC_unconfirmed"]["wins"] += 1
+            
+            # 4. Liquidity at exit for trailing_stop
+            exit_reason = ld.get("exit_reason", "")
+            obi_exit = ld.get("orderbook_imbalance_exit", {})
+            if exit_reason == "trailing_stop" and obi_exit:
+                has_data = True
+                spread_bps = obi_exit.get("spread_bps", 0)
+                depth_ratio = obi_exit.get("depth_ratio", 0)
+                liquidity_at_stop["total_spread_bps"] += spread_bps
+                liquidity_at_stop["total_depth_ratio"] += depth_ratio
+                liquidity_at_stop["count"] += 1
+        
+        if not has_data:
+            return {}
+        
+        # Compute ATR regime stats
+        atr_result = {}
+        for regime in ["low", "medium", "high", "extreme", "unknown"]:
+            data = atr_buckets[regime]
+            if data["count"] > 0:
+                atr_result[regime] = {
+                    "count": data["count"],
+                    "win_rate": round(data["wins"] / data["count"], 4),
+                    "avg_pnl": round(data["total_pnl"] / data["count"], 4),
+                }
+        
+        # Compute stop efficiency by time zone
+        timezone_result = {}
+        for tz, data in stop_by_timezone.items():
+            if data["count"] > 0:
+                margins = data["margins"]
+                timezone_result[tz] = {
+                    "count": data["count"],
+                    "win_rate": round(data["wins"] / data["count"], 4),
+                    "avg_pnl": round(data["total_pnl"] / data["count"], 4),
+                    "avg_survival_margin_bps": round(sum(margins) / len(margins), 2) if margins else 0,
+                }
+        
+        # Compute disagreement impact
+        disagreement_result = {}
+        for key, data in sorted(disagreement_impact.items(), key=lambda x: -x[1]["count"]):
+            if data["count"] > 0:
+                disagreement_result[key] = {
+                    "count": data["count"],
+                    "win_rate": round(data["wins"] / data["count"], 4),
+                    "avg_pnl": round(data["total_pnl"] / data["count"], 4),
+                }
+        
+        # Survival margin distribution
+        margin_stats = {}
+        if survival_margins:
+            margin_stats = {
+                "count": len(survival_margins),
+                "avg_bps": round(sum(survival_margins) / len(survival_margins), 2),
+                "min_bps": round(min(survival_margins), 2),
+                "max_bps": round(max(survival_margins), 2),
+                "median_bps": round(sorted(survival_margins)[len(survival_margins) // 2], 2),
+            }
+        
+        # Liquidity stats
+        liquidity_stats = {}
+        if liquidity_at_stop["count"] > 0:
+            liquidity_stats = {
+                "count": liquidity_at_stop["count"],
+                "avg_spread_bps": round(liquidity_at_stop["total_spread_bps"] / liquidity_at_stop["count"], 2),
+                "avg_depth_ratio": round(liquidity_at_stop["total_depth_ratio"] / liquidity_at_stop["count"], 4),
+            }
+        
+        return {
+            "atr_at_entry": atr_result,
+            "survival_margin_distribution": margin_stats,
+            "near_miss_winners": {
+                "count": near_miss_winners["count"],
+                "total_pnl": round(near_miss_winners["total_pnl"], 4),
+            },
+            "stop_efficiency_by_timezone": timezone_result,
+            "layer_disagreement_impact": disagreement_result,
+            "liquidity_at_trailing_stop": liquidity_stats,
         }
 
     # ------------------------------------------------------------------

@@ -156,6 +156,21 @@ class OrderManager:
                         "confidence_gate": getattr(signal, "bayesian_confidence_gate", True),
                         "fallback": getattr(signal, "bayesian_fallback", False),
                     }
+                    
+                    # Volatility context (ATR)
+                    atr_value = getattr(signal, "atr_value", None)
+                    if atr_value is not None:
+                        log_entry["volatility"] = {
+                            "atr_value": atr_value,
+                            "atr_percent": getattr(signal, "atr_percent", None),
+                            "atr_normalized_bps": getattr(signal, "atr_normalized_bps", None),
+                            "volatility_regime": getattr(signal, "volatility_regime", None),
+                        }
+                    
+                    # Layer disagreement attribution
+                    disagreement = getattr(signal, "layer_disagreement", {})
+                    if disagreement:
+                        log_entry["layer_disagreement"] = disagreement
 
                 trade_log_data = json.dumps(log_entry, default=str)
             except Exception as e:
@@ -517,6 +532,8 @@ class OrderManager:
         reason: str = "stop_loss",
         is_dry_run: bool = True,
         sell_state_snapshot: Optional[MarketStateSnapshot] = None,
+        effective_trailing_pct: Optional[float] = None,
+        time_zone: Optional[str] = None,
     ) -> Optional[float]:
         """
         Sell an open position early (before market resolution).
@@ -529,6 +546,8 @@ class OrderManager:
             reason: Why we're selling (full reason string from exit strategy)
             is_dry_run: Whether to simulate
             sell_state_snapshot: Market state at time of exit
+            effective_trailing_pct: The trailing stop percentage that was used
+            time_zone: The time zone for trailing stop (normal, TIGHT, FINAL)
 
         Returns:
             P&L from the early exit, or None if failed
@@ -695,6 +714,41 @@ class OrderManager:
                         "actual_return_pct": round(actual_return, 6),
                         "capture_ratio": round(actual_return / mfe_pct, 4) if mfe_pct > 0 else 0,
                     }
+                    
+                    # Survival buffer analysis: MAE vs. Stop Loss distance
+                    # Only compute for trailing_stop exits
+                    if exit_reason == "trailing_stop" and effective_trailing_pct is not None:
+                        # Calculate stop trigger price
+                        # For a trailing stop, the stop triggers when price drops X% from peak
+                        stop_trigger_price = position.peak_price * (1 - effective_trailing_pct)
+                        
+                        # Distance from entry to stop trigger (in BPS)
+                        stop_distance_bps = abs(position.entry_price - stop_trigger_price) / position.entry_price * 10000
+                        
+                        # MAE in BPS
+                        mae_bps = mae_pct * 10000
+                        
+                        # Survival margin: how much room we had before stop would trigger
+                        # Positive = we survived with room to spare
+                        # Negative = we would have been stopped (shouldn't happen for completed trades)
+                        survival_margin_bps = stop_distance_bps - mae_bps
+                        
+                        # Near-miss winner: won but MAE came within 20% of stop distance
+                        near_miss_winner = pnl > 0 and survival_margin_bps < (stop_distance_bps * 0.20)
+                        
+                        # Stop breach percentage: how close MAE came to stop (0-100%+)
+                        stop_breach_pct = (mae_bps / stop_distance_bps * 100) if stop_distance_bps > 0 else 0
+                        
+                        log_entry["survival_analysis"] = {
+                            "effective_trailing_pct": round(effective_trailing_pct, 4),
+                            "time_zone": time_zone or "unknown",
+                            "stop_trigger_price": round(stop_trigger_price, 6),
+                            "stop_distance_bps": round(stop_distance_bps, 2),
+                            "mae_bps": round(mae_bps, 2),
+                            "survival_margin_bps": round(survival_margin_bps, 2),
+                            "near_miss_winner": near_miss_winner,
+                            "stop_breach_pct": round(stop_breach_pct, 2),
+                        }
 
                 # Order book imbalance at exit
                 if sell_state_snapshot:

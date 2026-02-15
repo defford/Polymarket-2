@@ -111,6 +111,15 @@ class CompositeSignal(BaseModel):
     vroc_value: float = 0.0                 # VROC percentage
     vroc_confirmed: bool = True             # True if VROC >= threshold (or disabled)
 
+    # Volatility context (ATR)
+    atr_value: Optional[float] = None       # Raw ATR in price units
+    atr_percent: Optional[float] = None     # ATR as percentage of price
+    atr_normalized_bps: Optional[float] = None  # ATR in basis points
+    volatility_regime: Optional[str] = None  # 'low', 'medium', 'high', 'extreme'
+
+    # Layer disagreement attribution
+    layer_disagreement: dict = {}            # Conflict analysis when L1/L2 disagree
+
     # Bayesian evidence categories
     l1_evidence: str = "L1_NEUTRAL"
     l2_evidence: str = "L2_NEUTRAL"

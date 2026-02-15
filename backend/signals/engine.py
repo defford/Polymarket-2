@@ -13,7 +13,7 @@ import pandas as pd
 from models import CompositeSignal, Layer1Signal, Layer2Signal, Side, MarketInfo
 from config import config_manager
 from signals.polymarket_ta import compute_layer1_signal
-from signals.btc_ta import compute_layer2_signal
+from signals.btc_ta import compute_layer2_signal, compute_atr
 from signals.vwap_vroc import compute_vwap, compute_vroc
 from polymarket.client import polymarket_client
 from binance.client import binance_client
@@ -56,11 +56,14 @@ class SignalEngine:
         # --- Layer 1: Polymarket Token TA ---
         layer1 = self._compute_layer1(market, config)
 
-        # --- Fetch BTC candles once (reused by Layer 2, VWAP, VROC) ---
+        # --- Fetch BTC candles once (reused by Layer 2, VWAP, VROC, ATR) ---
         candles = self._fetch_candles()
 
         # --- Layer 2: BTC Multi-TF EMAs ---
         layer2 = self._compute_layer2(config, candles)
+
+        # --- ATR: Volatility context (always computed for data collection) ---
+        atr_data = compute_atr(candles.get("1m"), period=14)
 
         # --- VWAP: always computed for data collection ---
         vwap_data = compute_vwap(
@@ -75,7 +78,7 @@ class SignalEngine:
         )
 
         # --- Combine ---
-        composite = self._combine_signals(layer1, layer2, config, vwap_data, vroc_data)
+        composite = self._combine_signals(layer1, layer2, config, vwap_data, vroc_data, atr_data)
 
         self._last_signal = composite
 
@@ -90,6 +93,7 @@ class SignalEngine:
         vwap_str = f"{vwap_data['vwap']:.2f}" if vwap_data.get("vwap") else "N/A"
         vwap_tag = "ON" if config.vwap_enabled else "off"
         vroc_tag = "ON" if config.vroc_enabled else "off"
+        atr_str = f"{atr_data['atr_normalized_bps']:.1f} bps" if atr_data.get("atr_value") else "N/A"
 
         logger.info(
             f"SIGNAL ANALYSIS:\n"
@@ -99,6 +103,7 @@ class SignalEngine:
             f"    - Alignment: {layer2.alignment_count}/{layer2.total_timeframes}\n"
             f"  VWAP [{vwap_tag}]: {vwap_str} | signal={vwap_data['signal']:+.3f} | z={vwap_data['band_position']:+.2f}\n"
             f"  VROC [{vroc_tag}]: {vroc_data['vroc']:+.1f}% | confirmed={composite.vroc_confirmed}\n"
+            f"  ATR: {atr_str} | regime={atr_data.get('volatility_regime', 'N/A')}\n"
             f"  COMPOSITE: {composite.composite_score:+.3f} (Conf: {comp_conf:.2f})\n"
             f"  ACTION: {'TRADE ' + composite.recommended_side.value.upper() if composite.should_trade else 'NO TRADE'}"
         )
@@ -154,6 +159,7 @@ class SignalEngine:
         config,
         vwap_data: dict,
         vroc_data: dict,
+        atr_data: dict,
     ) -> CompositeSignal:
         """
         Combine both layers into a composite signal.
@@ -184,6 +190,11 @@ class SignalEngine:
             l2_weight /= total_weight
             vwap_weight /= total_weight
 
+        # Analyze layer disagreement
+        disagreement = self._analyze_layer_disagreement(
+            layer1, layer2, vroc_data.get("vroc", 0.0), config.vroc_threshold, config
+        )
+
         # If both core layers have no data at all, bail
         if layer1.confidence == 0 and layer2.confidence == 0:
             return CompositeSignal(
@@ -198,10 +209,15 @@ class SignalEngine:
                 vwap_signal=vwap_signal,
                 vwap_band_position=vwap_data.get("band_position", 0.0),
                 vroc_enabled=config.vroc_enabled,
-                vroc_value=vwap_data.get("vroc", 0.0),
+                vroc_value=vroc_data.get("vroc", 0.0),
                 vroc_confirmed=True,
                 l1_evidence=bin_l1_evidence(layer1.direction),
                 l2_evidence=bin_l2_evidence(layer2.direction),
+                atr_value=atr_data.get("atr_value"),
+                atr_percent=atr_data.get("atr_percent"),
+                atr_normalized_bps=atr_data.get("atr_normalized_bps"),
+                volatility_regime=atr_data.get("volatility_regime"),
+                layer_disagreement=disagreement,
             )
 
         # If one core layer has zero confidence, redistribute its weight
@@ -292,7 +308,85 @@ class SignalEngine:
             # Bayesian evidence categories
             l1_evidence=bin_l1_evidence(layer1.direction),
             l2_evidence=bin_l2_evidence(layer2.direction),
+            # ATR / Volatility context
+            atr_value=atr_data.get("atr_value"),
+            atr_percent=atr_data.get("atr_percent"),
+            atr_normalized_bps=atr_data.get("atr_normalized_bps"),
+            volatility_regime=atr_data.get("volatility_regime"),
+            # Layer disagreement
+            layer_disagreement=disagreement,
         )
+
+    def _analyze_layer_disagreement(
+        self,
+        layer1: Layer1Signal,
+        layer2: Layer2Signal,
+        vroc_value: float,
+        vroc_threshold: float,
+        config,
+    ) -> dict:
+        """
+        When L1 and L2 disagree, identify which L2 component caused the conflict.
+        
+        This helps answer: when layers disagree, which specific timeframe or
+        indicator is responsible? This is crucial for 15-minute survival analysis.
+        """
+        # Default: no disagreement
+        if not layer1.direction and not layer2.direction:
+            return {"agreement": True, "reason": "both_neutral"}
+        
+        # Check if layers agree on direction
+        l1_direction = "bullish" if layer1.direction > 0.1 else "bearish" if layer1.direction < -0.1 else "neutral"
+        l2_direction = "bullish" if layer2.direction > 0.1 else "bearish" if layer2.direction < -0.1 else "neutral"
+        
+        if l1_direction == "neutral" or l2_direction == "neutral":
+            return {"agreement": True, "reason": "one_neutral", "l1_direction": l1_direction, "l2_direction": l2_direction}
+        
+        if l1_direction == l2_direction:
+            return {"agreement": True, "l1_direction": l1_direction, "l2_direction": l2_direction}
+        
+        # Layers disagree - find which L2 timeframes conflict
+        tf_weights = {
+            "1m": 0.10,
+            "5m": 0.15,
+            "15m": 0.35,
+            "1h": 0.30,
+            "4h": 0.05,
+            "1d": 0.05,
+        }
+        
+        conflict_sources = []
+        for tf, sig in layer2.timeframe_signals.items():
+            tf_direction = "bullish" if sig > 0.1 else "bearish" if sig < -0.1 else "neutral"
+            
+            if tf_direction != "neutral" and tf_direction != l1_direction:
+                conflict_sources.append({
+                    "timeframe": tf,
+                    "signal": round(sig, 4),
+                    "conflicts_with": f"L1_{l1_direction}",
+                    "weight": tf_weights.get(tf, 0.1),
+                })
+        
+        # Find dominant conflict (highest weight)
+        dominant_conflict_tf = None
+        if conflict_sources:
+            dominant_conflict_tf = max(conflict_sources, key=lambda x: x["weight"])["timeframe"]
+        
+        # VROC conflict check
+        vroc_conflict = vroc_value < vroc_threshold
+        
+        return {
+            "agreement": False,
+            "l1_direction": round(layer1.direction, 4),
+            "l2_direction": round(layer2.direction, 4),
+            "l1_direction_label": l1_direction,
+            "l2_direction_label": l2_direction,
+            "conflict_sources": conflict_sources,
+            "dominant_conflict_tf": dominant_conflict_tf,
+            "vroc_conflict": vroc_conflict,
+            "vroc_value": round(vroc_value, 2),
+            "vroc_threshold": vroc_threshold,
+        }
 
 
 # Global singleton
