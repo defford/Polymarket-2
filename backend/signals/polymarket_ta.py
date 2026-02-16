@@ -87,15 +87,15 @@ def compute_layer1_signal(
 
     rsi_signal = 0.0
     if not np.isnan(current_rsi):
-        if current_rsi < config.pm_rsi_oversold:
-            # Oversold → price may bounce → bullish for "Up"
-            rsi_signal = (config.pm_rsi_oversold - current_rsi) / config.pm_rsi_oversold
+        if current_rsi < 15:
+            # Extreme exhaustion → strong bullish for "Up" (avoid crowded trades)
+            rsi_signal = (15 - current_rsi) / 15
         elif current_rsi > config.pm_rsi_overbought:
             # Overbought → price may drop → bearish for "Up" (bullish for "Down")
             rsi_signal = -(current_rsi - config.pm_rsi_overbought) / (100 - config.pm_rsi_overbought)
         else:
-            # Neutral zone - slight lean based on position
-            rsi_signal = (current_rsi - 50) / 50 * 0.3  # weak signal in neutral
+            # Neutral zone - no RSI signal (avoid late entries on moderate oversold)
+            rsi_signal = 0.0
 
     # --- MACD ---
     macd_line, signal_line, histogram = calculate_macd(

@@ -53,9 +53,9 @@ class SignalConfig:
     btc_ema_1d: list = field(default_factory=lambda: [20, 50, 200])
 
     # Signal combination weights
-    layer1_weight: float = 0.4
-    layer2_weight: float = 0.6
-    buy_threshold: float = 0.08  # composite score must exceed this to trade
+    layer1_weight: float = 0.7
+    layer2_weight: float = 0.3
+    buy_threshold: float = 0.25  # composite score must exceed this to trade
 
     # VWAP (Volume Weighted Average Price) — toggle for A/B testing
     vwap_enabled: bool = False          # when ON, blends VWAP direction into composite score
@@ -76,7 +76,7 @@ class RiskConfig:
     max_position_size: float = 3.0       # USD per trade
     max_trades_per_window: int = 3       # per 15-min market
     max_daily_loss: float = 15.0         # USD
-    min_signal_confidence: float = 0.35  # 0.0 - 1.0
+    min_signal_confidence: float = 0.45  # 0.0 - 1.0
     max_consecutive_losses: int = 3
     cooldown_minutes: int = 30           # after hitting loss limit
     stop_trading_minutes_before_close: int = 5  # stop before market closes
