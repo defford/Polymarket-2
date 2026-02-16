@@ -599,8 +599,8 @@ export default function ConfigPanel({ config, configEnabled, onUpdate, onToggleC
                       <div className="space-y-3 mt-3 animate-fade-in">
                         <NumberParam label="Buffer Duration (sec)" value={local.exit?.survival_buffer_seconds ?? 180}
                           min={30} max={300} step={10} onChange={(v) => update('exit', 'survival_buffer_seconds', v)} />
-                        <NumberParam label="Hard Stop (BPS)" value={local.exit?.survival_hard_stop_bps ?? 15}
-                          min={5} max={100} step={5} onChange={(v) => update('exit', 'survival_hard_stop_bps', v)} />
+                        <NumberParam label="Hard Stop (BPS)" value={local.exit?.survival_hard_stop_bps ?? 1000}
+                          min={5} max={5000} step={100} onChange={(v) => update('exit', 'survival_hard_stop_bps', v)} />
                       </div>
                     )}
                   </div>

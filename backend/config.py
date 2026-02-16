@@ -113,7 +113,7 @@ class ExitConfig:
     # Survival Buffer — initial protection window
     survival_buffer_enabled: bool = True     # master switch for survival buffer
     survival_buffer_seconds: int = 180       # first 180s: hard stop only, no trailing
-    survival_hard_stop_bps: float = 15.0     # 15 BPS (0.15%) hard stop during buffer
+    survival_hard_stop_bps: float = 1000.0     # 1000 BPS (10%) hard stop during buffer
 
     # Dynamic Conviction Scaling
     high_conviction_threshold: float = 0.45  # conviction > this = extended TP
