@@ -112,10 +112,15 @@ class CompositeSignal(BaseModel):
     vroc_confirmed: bool = True             # True if VROC >= threshold (or disabled)
 
     # Volatility context (ATR)
-    atr_value: Optional[float] = None       # Raw ATR in price units
+    atr_value: Optional[float] = None       # Raw ATR in price units (1m candles)
     atr_percent: Optional[float] = None     # ATR as percentage of price
     atr_normalized_bps: Optional[float] = None  # ATR in basis points
     volatility_regime: Optional[str] = None  # 'low', 'medium', 'high', 'extreme'
+
+    # 15m ATR for delta scaling
+    atr_15m_value: Optional[float] = None   # Raw ATR from 15m candles
+    atr_15m_bps: Optional[float] = None     # 15m ATR in basis points
+    atr_15m_percentile: Optional[float] = None  # Percentile rank vs history
 
     # Layer disagreement attribution
     layer_disagreement: dict = {}            # Conflict analysis when L1/L2 disagree
@@ -167,6 +172,8 @@ class Position(BaseModel):
     trough_price: float = 0.0     # lowest price since entry (for MAE tracking)
     entry_time: Optional[datetime] = None  # when we entered
     entry_conviction: float = 0.0  # composite_confidence at entry (for conviction scaling)
+    entry_btc_price: float = 0.0   # BTC price at entry (for divergence monitoring)
+    entry_btc_spread_bps: float = 0.0  # BTC spread at entry (for liquidity guard)
     is_dry_run: bool = True
 
 

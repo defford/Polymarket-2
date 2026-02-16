@@ -363,3 +363,74 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> dict:
         "volatility_regime": regime,
         "true_range_latest": float(true_range.iloc[-1]),
     }
+
+
+def compute_atr_15m(df: pd.DataFrame, period: int = 14, reference_window: int = 100) -> dict:
+    """
+    Compute 15m ATR specifically for delta scaling (TP adjustment).
+    
+    This is separate from the 1m ATR used for general volatility classification.
+    The 15m ATR is more appropriate for scaling take-profit levels in 15-minute
+    binary markets, as it captures the expected price range within the market window.
+    
+    Args:
+        df: DataFrame with 15m candles (high, low, close)
+        period: ATR smoothing period (default 14)
+        reference_window: Number of periods for percentile calculation
+    
+    Returns:
+        dict with:
+            - atr_15m_value: Raw ATR in price units
+            - atr_15m_bps: ATR in basis points
+            - atr_15m_percentile: Percentile rank (0-100) vs historical
+            - atr_zscore: Z-score vs historical mean
+    """
+    if df is None or df.empty or len(df) < period + 1:
+        return {
+            "atr_15m_value": None,
+            "atr_15m_bps": None,
+            "atr_15m_percentile": None,
+            "atr_zscore": None,
+        }
+    
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    
+    if len(high) < 2:
+        return {
+            "atr_15m_value": None,
+            "atr_15m_bps": None,
+            "atr_15m_percentile": None,
+            "atr_zscore": None,
+        }
+    
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    atr_series = true_range.ewm(alpha=1/period, adjust=False).mean()
+    atr_value = atr_series.iloc[-1]
+    
+    current_price = close.iloc[-1]
+    atr_percent = atr_value / current_price if current_price > 0 else 0
+    atr_bps = atr_percent * 10000
+    
+    atr_history = atr_series.dropna().tail(reference_window)
+    if len(atr_history) >= 20:
+        percentile = (atr_history < atr_value).sum() / len(atr_history) * 100
+        mean_atr = atr_history.mean()
+        std_atr = atr_history.std()
+        zscore = (atr_value - mean_atr) / std_atr if std_atr > 0 else 0
+    else:
+        percentile = 50.0
+        zscore = 0.0
+    
+    return {
+        "atr_15m_value": float(atr_value),
+        "atr_15m_bps": float(atr_bps),
+        "atr_15m_percentile": float(percentile),
+        "atr_zscore": float(zscore),
+    }

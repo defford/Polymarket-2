@@ -138,6 +138,51 @@ class BinanceClient:
             logger.error(f"Error fetching current price: {e}")
             return None
 
+    def get_orderbook(self, limit: int = 5) -> dict:
+        """
+        Get BTC orderbook for spread calculation.
+        
+        Returns dict with:
+            - best_bid: float
+            - best_ask: float
+            - spread: float (absolute)
+            - spread_bps: float (basis points)
+            - mid_price: float
+        """
+        try:
+            resp = self._http.get(
+                f"{BINANCE_BASE_URL}/api/v3/depth",
+                params={
+                    "symbol": BINANCE_SYMBOL,
+                    "limit": limit,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            
+            if not bids or not asks:
+                return {"best_bid": 0, "best_ask": 0, "spread": 0, "spread_bps": 0, "mid_price": 0}
+            
+            best_bid = float(bids[0][0])
+            best_ask = float(asks[0][0])
+            spread = best_ask - best_bid
+            mid_price = (best_bid + best_ask) / 2
+            spread_bps = (spread / mid_price * 10000) if mid_price > 0 else 0
+            
+            return {
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread": spread,
+                "spread_bps": spread_bps,
+                "mid_price": mid_price,
+            }
+        except Exception as e:
+            logger.error(f"Error fetching BTC orderbook: {e}")
+            return {"best_bid": 0, "best_ask": 0, "spread": 0, "spread_bps": 0, "mid_price": 0}
+
     def get_cached_candles(self, timeframe: str) -> Optional[pd.DataFrame]:
         """Get cached candles without fetching."""
         return self._candle_cache.get(timeframe)

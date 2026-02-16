@@ -1137,7 +1137,95 @@ class AnalysisEngine:
             "stop_efficiency_by_timezone": timezone_result,
             "layer_disagreement_impact": disagreement_result,
             "liquidity_at_trailing_stop": liquidity_stats,
+            "btc_token_divergence": self._btc_token_divergence_analysis(trades_with_log),
         }
+
+    def _btc_token_divergence_analysis(self, trades_with_log: list[dict]) -> dict:
+        """
+        Analyze BTC vs Token divergence to evaluate survival buffer effectiveness.
+        
+        Tracks:
+        - How often divergence blocked exits during survival buffer
+        - Success rate of trades where divergence was detected
+        - Average PnL of divergence-protected trades
+        """
+        divergence_blocked = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        normal_survival = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        liquidity_guarded = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        signal_decay_exits = {"count": 0, "wins": 0, "total_pnl": 0.0}
+        
+        for t in trades_with_log:
+            trade = t["trade"]
+            log_data = t.get("log_data", {})
+            pnl = trade.pnl or 0
+            won = pnl > 0
+            
+            sell_state = log_data.get("sell_state", {})
+            signal = sell_state.get("signal", {})
+            
+            entry_btc_price = 0
+            entry_spread_bps = 0
+            buy_state = log_data.get("buy_state", {})
+            if buy_state:
+                entry_btc_price = buy_state.get("btc_price", 0)
+            
+            exit_reason = trade.notes.lower() if trade.notes else ""
+            
+            if "signal_decay_estop" in exit_reason:
+                signal_decay_exits["count"] += 1
+                signal_decay_exits["total_pnl"] += pnl
+                if won:
+                    signal_decay_exits["wins"] += 1
+            elif "divergence" in exit_reason or "noise" in exit_reason:
+                divergence_blocked["count"] += 1
+                divergence_blocked["total_pnl"] += pnl
+                if won:
+                    divergence_blocked["wins"] += 1
+            elif "liquidity_guard" in exit_reason or "stop-hunt" in exit_reason:
+                liquidity_guarded["count"] += 1
+                liquidity_guarded["total_pnl"] += pnl
+                if won:
+                    liquidity_guarded["wins"] += 1
+            else:
+                normal_survival["count"] += 1
+                normal_survival["total_pnl"] += pnl
+                if won:
+                    normal_survival["wins"] += 1
+        
+        result = {}
+        
+        if divergence_blocked["count"] > 0:
+            result["divergence_blocked"] = {
+                "count": divergence_blocked["count"],
+                "win_rate": round(divergence_blocked["wins"] / divergence_blocked["count"], 4),
+                "avg_pnl": round(divergence_blocked["total_pnl"] / divergence_blocked["count"], 4),
+            }
+        
+        if liquidity_guarded["count"] > 0:
+            result["liquidity_guarded"] = {
+                "count": liquidity_guarded["count"],
+                "win_rate": round(liquidity_guarded["wins"] / liquidity_guarded["count"], 4),
+                "avg_pnl": round(liquidity_guarded["total_pnl"] / liquidity_guarded["count"], 4),
+            }
+        
+        if signal_decay_exits["count"] > 0:
+            result["signal_decay_estop"] = {
+                "count": signal_decay_exits["count"],
+                "win_rate": round(signal_decay_exits["wins"] / signal_decay_exits["count"], 4),
+                "avg_pnl": round(signal_decay_exits["total_pnl"] / signal_decay_exits["count"], 4),
+            }
+        
+        total_with_features = divergence_blocked["count"] + liquidity_guarded["count"] + signal_decay_exits["count"]
+        if total_with_features > 0:
+            total_wins = divergence_blocked["wins"] + liquidity_guarded["wins"] + signal_decay_exits["wins"]
+            total_pnl = divergence_blocked["total_pnl"] + liquidity_guarded["total_pnl"] + signal_decay_exits["total_pnl"]
+            result["feature_protected_summary"] = {
+                "total_count": total_with_features,
+                "overall_win_rate": round(total_wins / total_with_features, 4),
+                "overall_avg_pnl": round(total_pnl / total_with_features, 4),
+            }
+        
+        return result
 
     # ------------------------------------------------------------------
     # Helpers

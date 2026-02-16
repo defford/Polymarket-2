@@ -170,6 +170,50 @@ PARAM_RANGES = {
             "min": 0.001, "max": 0.05, "type": "float",
             "desc": "Tight trailing stop % for low conviction positions (0.001 = 0.1%).",
         },
+        "divergence_monitor_enabled": {
+            "type": "bool",
+            "desc": "Detect token noise vs legitimate BTC signal. Block stops when token moves but BTC is stable.",
+        },
+        "token_noise_threshold_bps": {
+            "min": 5.0, "max": 50.0, "type": "float",
+            "desc": "Token must drop > this BPS to trigger divergence check.",
+        },
+        "btc_stable_threshold_bps": {
+            "min": 1.0, "max": 10.0, "type": "float",
+            "desc": "BTC must move < this BPS to classify as 'stable' (token noise).",
+        },
+        "signal_decay_estop_enabled": {
+            "type": "bool",
+            "desc": "Emergency exit when BTC L2 confidence collapses below threshold.",
+        },
+        "signal_decay_threshold": {
+            "min": 0.05, "max": 0.30, "type": "float",
+            "desc": "L2 confidence below this triggers immediate exit (overrides survival buffer).",
+        },
+        "liquidity_guard_enabled": {
+            "type": "bool",
+            "desc": "Block stops during illiquid conditions (wide token spread, stable BTC spread).",
+        },
+        "token_wide_spread_bps": {
+            "min": 1000.0, "max": 5000.0, "type": "float",
+            "desc": "Token spread > this BPS = potential stop-hunt.",
+        },
+        "btc_spread_stable_bps": {
+            "min": 100.0, "max": 1000.0, "type": "float",
+            "desc": "BTC spread change < this = stable (trigger liquidity guard).",
+        },
+        "delta_scaling_enabled": {
+            "type": "bool",
+            "desc": "Scale take-profit based on BTC 15m ATR (volatility-adjusted TP).",
+        },
+        "atr_base_tp_pct": {
+            "min": 0.10, "max": 0.50, "type": "float",
+            "desc": "Base TP at median ATR.",
+        },
+        "atr_scale_factor": {
+            "min": 0.1, "max": 1.0, "type": "float",
+            "desc": "TP adjustment per ATR standard deviation.",
+        },
     },
     "trading": {
         "order_type": {
@@ -571,6 +615,36 @@ def build_analysis_prompt(analysis: dict, goal: str, base_config: dict) -> str:
             sections.append("#### Liquidity at Trailing Stop Exit")
             sections.append(f"- **Avg Spread:** {liquidity.get('avg_spread_bps', 0):.1f} BPS")
             sections.append(f"- **Avg Depth Ratio:** {liquidity.get('avg_depth_ratio', 0):.4f}")
+            sections.append("")
+        
+        # BTC vs Token Divergence
+        divergence = survival.get("btc_token_divergence", {})
+        if divergence:
+            sections.append("#### BTC vs Token Divergence Analysis")
+            
+            divergence_blocked = divergence.get("divergence_blocked", {})
+            if divergence_blocked:
+                sections.append(f"- **Divergence Blocked Exits:** {divergence_blocked['count']} trades")
+                sections.append(f"  - Win Rate: {divergence_blocked['win_rate']:.0%}")
+                sections.append(f"  - Avg PnL: ${divergence_blocked['avg_pnl']:.4f}")
+            
+            liquidity_guarded = divergence.get("liquidity_guarded", {})
+            if liquidity_guarded:
+                sections.append(f"- **Liquidity Guard Protected:** {liquidity_guarded['count']} trades")
+                sections.append(f"  - Win Rate: {liquidity_guarded['win_rate']:.0%}")
+                sections.append(f"  - Avg PnL: ${liquidity_guarded['avg_pnl']:.4f}")
+            
+            signal_decay = divergence.get("signal_decay_estop", {})
+            if signal_decay:
+                sections.append(f"- **Signal Decay E-Stop Exits:** {signal_decay['count']} trades")
+                sections.append(f"  - Win Rate: {signal_decay['win_rate']:.0%}")
+                sections.append(f"  - Avg PnL: ${signal_decay['avg_pnl']:.4f}")
+            
+            feature_summary = divergence.get("feature_protected_summary", {})
+            if feature_summary:
+                sections.append(f"- **Feature-Protected Summary:** {feature_summary['total_count']} total trades")
+                sections.append(f"  - Overall Win Rate: {feature_summary['overall_win_rate']:.0%}")
+                sections.append(f"  - Overall Avg PnL: ${feature_summary['overall_avg_pnl']:.4f}")
             sections.append("")
 
     # Section 3: Optimization Goal

@@ -5,13 +5,17 @@ Evaluates open positions against stop-loss conditions each tick and returns
 exit decisions. Does NOT execute sells — the engine handles that.
 
 Checks:
-1. Survival Buffer — 15 BPS hard stop for first 180s, no trailing
-2. Trailing stop — sell if price drops X% from peak (only after buffer, if profitable)
-3. Time-decay tightening — tighter stops as window closes
-4. BTC pressure scaling — short-term TA widens/tightens stops dynamically
-5. Signal reversal — exit if signals flip hard against position
-6. Hard floor — absolute max loss per trade
-7. Conviction scaling — adjust TP/trail based on entry conviction
+1. Signal Decay E-Stop — emergency exit when BTC conviction collapses
+2. Survival Buffer — 15 BPS hard stop for first 180s, no trailing
+3. Divergence Monitor — detect token noise vs legitimate BTC signal
+4. Liquidity Guard — prevent stop-hunts during illiquid conditions
+5. Trailing stop — sell if price drops X% from peak (only after buffer, if profitable)
+6. Time-decay tightening — tighter stops as window closes
+7. BTC pressure scaling — short-term TA widens/tightens stops dynamically
+8. Signal reversal — exit if signals flip hard against position
+9. Hard floor — absolute max loss per trade
+10. Conviction scaling — adjust TP/trail based on entry conviction
+11. Delta Scaling — ATR-based TP adjustment
 
 The key insight: the TOKEN price lags BTC reality. If 1m/5m/15m EMAs
 are moving hard against your position, the token hasn't caught up yet.
@@ -93,6 +97,9 @@ def evaluate_exit(
     config_mgr=None,
     mkt_discovery=None,
     btc_client=None,
+    current_btc_price: float = 0.0,
+    current_btc_spread_bps: float = 0.0,
+    current_token_spread_bps: float = 0.0,
 ) -> Optional[dict]:
     """
     Evaluate whether an open position should be exited early.
@@ -106,16 +113,21 @@ def evaluate_exit(
         config_mgr: Optional config manager (default: global)
         mkt_discovery: Optional market discovery (default: global)
         btc_client: Optional binance client (default: global)
+        current_btc_price: Current BTC price (for divergence check)
+        current_btc_spread_bps: Current BTC spread (for liquidity guard)
+        current_token_spread_bps: Current token spread (for liquidity guard)
 
     Returns:
         Decision dict with keys:
             reason: Full human-readable reason string
-            reason_category: "trailing_stop" | "hard_take_profit" | "hard_stop" | "signal_reversal"
+            reason_category: "trailing_stop" | "hard_take_profit" | "hard_stop" | "signal_reversal" | "signal_decay_estop"
             effective_trailing_pct: The final trailing stop % used
             pressure_multiplier: BTC pressure multiplier applied
             time_zone: "normal" | "TIGHT" | "FINAL" | "SURVIVAL"
             btc_pressure: Raw BTC pressure value
             conviction_tier: "high" | "normal" | "low"
+            divergence_blocked: bool (if stop was blocked by divergence)
+            liquidity_guard_active: bool (if liquidity guard blocked exit)
         Or None if no exit warranted.
     """
     _cfg = config_mgr if config_mgr is not None else config_manager
@@ -140,6 +152,26 @@ def evaluate_exit(
         exit_config.survival_buffer_enabled
         and held_seconds < exit_config.survival_buffer_seconds
     )
+
+    l2_confidence = signal.layer2.confidence if signal and signal.layer2 else 0.5
+
+    if exit_config.signal_decay_estop_enabled and l2_confidence < exit_config.signal_decay_threshold:
+        reason = (
+            f"signal_decay_estop: BTC L2 confidence={l2_confidence:.2f} < {exit_config.signal_decay_threshold:.2f} | "
+            f"OVERRIDE survival buffer, immediate exit"
+        )
+        logger.info(f"🚨 EMERGENCY EXIT -- {reason}")
+        return {
+            "reason": reason,
+            "reason_category": "signal_decay_estop",
+            "effective_trailing_pct": 0.0,
+            "pressure_multiplier": 1.0,
+            "time_zone": "SURVIVAL",
+            "btc_pressure": 0.0,
+            "conviction_tier": "normal",
+            "divergence_blocked": False,
+            "liquidity_guard_active": False,
+        }
 
     conviction = position.entry_conviction if position.entry_conviction > 0 else 0.5
     if conviction >= exit_config.high_conviction_threshold:
@@ -182,6 +214,13 @@ def evaluate_exit(
     elif conviction_tier == "low":
         base_trailing = min(base_trailing, exit_config.low_conviction_trail_pct)
 
+    atr_15m_percentile = signal.atr_15m_percentile if signal else None
+    if exit_config.delta_scaling_enabled and atr_15m_percentile is not None:
+        if atr_15m_percentile > 75:
+            atr_multiplier = 1.0 + exit_config.atr_scale_factor * ((atr_15m_percentile - 50) / 50)
+            effective_tp = min(effective_tp * atr_multiplier, 0.60)
+            logger.debug(f"Delta scaling: ATR percentile={atr_15m_percentile:.0f}, TP={effective_tp:.1%}")
+
     effective_trailing = base_trailing * pressure_multiplier
 
     if exit_config.scaling_tp_enabled and position.entry_price > 0 and is_profitable:
@@ -193,6 +232,32 @@ def evaluate_exit(
     pressure_val = pressure.get("pressure", 0.0)
     momentum_val = pressure.get("momentum", 0.0)
 
+    divergence_blocked = False
+    if exit_config.divergence_monitor_enabled and in_survival_buffer:
+        if position.entry_price > 0 and position.current_price > 0:
+            token_drop_bps = abs(position.entry_price - position.current_price) / position.entry_price * 10000
+            btc_move_bps = 0.0
+            if position.entry_btc_price > 0 and current_btc_price > 0:
+                btc_move_bps = abs(current_btc_price - position.entry_btc_price) / position.entry_btc_price * 10000
+            
+            if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
+                divergence_blocked = True
+                logger.info(
+                    f"🔇 DIVERGENCE: Token dropped {token_drop_bps:.1f} BPS but BTC only moved {btc_move_bps:.1f} BPS | "
+                    f"Blocking stop during survival buffer"
+                )
+
+    liquidity_guard_active = False
+    if exit_config.liquidity_guard_enabled and current_token_spread_bps > 0:
+        if current_token_spread_bps > exit_config.token_wide_spread_bps:
+            btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+            if btc_spread_change < exit_config.btc_spread_stable_bps:
+                liquidity_guard_active = True
+                logger.info(
+                    f"🛡️ LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS > {exit_config.token_wide_spread_bps:.0f} | "
+                    f"BTC spread stable ({btc_spread_change:.0f} BPS change) | Blocking stop-hunt"
+                )
+
     if position.current_price > 0 and position.peak_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
 
@@ -202,7 +267,7 @@ def evaluate_exit(
                 f"📉 EXIT CHECK: {position.side.value.upper()} | "
                 f"entry={position.entry_price:.3f} peak={position.peak_price:.3f} "
                 f"now={position.current_price:.3f} (drop={drop_from_peak:.1%}) | "
-                f"conviction={conviction:.2f} ({conviction_tier}) | "
+                f"conviction={conviction:.2f} ({conviction_tier}) L2={l2_confidence:.2f} | "
                 f"BTC pressure={pressure_val:+.2f} -> multiplier={pressure_multiplier:.2f} | "
                 f"stop={effective_trailing:.1%} TP={effective_tp:.1%} ({time_zone_label}) | "
                 f"held={held_seconds:.0f}s left={time_str}"
@@ -214,9 +279,13 @@ def evaluate_exit(
         "time_zone": time_zone_label,
         "btc_pressure": pressure_val,
         "conviction_tier": conviction_tier,
+        "divergence_blocked": divergence_blocked,
+        "liquidity_guard_active": liquidity_guard_active,
     }
 
     if in_survival_buffer:
+        if divergence_blocked or liquidity_guard_active:
+            return None
         if position.current_price > 0 and position.entry_price > 0:
             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
             drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
@@ -229,6 +298,10 @@ def evaluate_exit(
                 )
                 logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
                 return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
+        return None
+
+    if liquidity_guard_active:
+        logger.info(f"🛡️ LIQUIDITY GUARD active - blocking trailing/hard stop")
         return None
 
     if not is_profitable:

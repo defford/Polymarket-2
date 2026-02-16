@@ -79,7 +79,19 @@
     "high_conviction_threshold": 0.45,
     "high_conviction_tp_pct": 0.35,
     "low_conviction_threshold": 0.25,
-    "low_conviction_trail_pct": 0.001
+    "low_conviction_trail_pct": 0.001,
+    "divergence_monitor_enabled": true,
+    "token_noise_threshold_bps": 10.0,
+    "btc_stable_threshold_bps": 2.0,
+    "signal_decay_estop_enabled": true,
+    "signal_decay_threshold": 0.15,
+    "liquidity_guard_enabled": true,
+    "token_wide_spread_bps": 3000.0,
+    "btc_spread_stable_bps": 500.0,
+    "delta_scaling_enabled": true,
+    "atr_base_tp_pct": 0.25,
+    "atr_scale_factor": 0.5,
+    "atr_reference_window": 100
   },
   "trading": {
     "order_type": "postOnly",

@@ -642,6 +642,70 @@ export default function ConfigPanel({ config, configEnabled, onUpdate, onToggleC
                       </div>
                     )}
                   </div>
+
+                  <div className="pt-2 border-t border-surface-2">
+                    <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                      BTC-Token Relationship
+                    </p>
+                    <ToggleParam
+                      label="Divergence Monitor"
+                      value={local.exit?.divergence_monitor_enabled ?? true}
+                      onChange={(v) => update('exit', 'divergence_monitor_enabled', v)}
+                      color="bg-accent-blue"
+                      description="Block stops when token moves but BTC is stable (noise filter)"
+                    />
+                    {local.exit?.divergence_monitor_enabled && (
+                      <div className="space-y-3 mt-3 animate-fade-in">
+                        <NumberParam label="Token Noise Threshold (BPS)" value={local.exit?.token_noise_threshold_bps ?? 10}
+                          min={5} max={50} step={5} onChange={(v) => update('exit', 'token_noise_threshold_bps', v)} />
+                        <NumberParam label="BTC Stable Threshold (BPS)" value={local.exit?.btc_stable_threshold_bps ?? 2}
+                          min={1} max={10} step={1} onChange={(v) => update('exit', 'btc_stable_threshold_bps', v)} />
+                      </div>
+                    )}
+                    <ToggleParam
+                      label="Signal Decay E-Stop"
+                      value={local.exit?.signal_decay_estop_enabled ?? true}
+                      onChange={(v) => update('exit', 'signal_decay_estop_enabled', v)}
+                      color="bg-accent-red"
+                      description="Emergency exit when BTC L2 confidence collapses"
+                    />
+                    {local.exit?.signal_decay_estop_enabled && (
+                      <div className="mt-3 animate-fade-in">
+                        <NumberParam label="Signal Decay Threshold" value={local.exit?.signal_decay_threshold ?? 0.15}
+                          min={0.05} max={0.30} step={0.01} onChange={(v) => update('exit', 'signal_decay_threshold', v)} />
+                      </div>
+                    )}
+                    <ToggleParam
+                      label="Liquidity Guard"
+                      value={local.exit?.liquidity_guard_enabled ?? true}
+                      onChange={(v) => update('exit', 'liquidity_guard_enabled', v)}
+                      color="bg-accent-yellow"
+                      description="Block stops during illiquid conditions (stop-hunt protection)"
+                    />
+                    {local.exit?.liquidity_guard_enabled && (
+                      <div className="space-y-3 mt-3 animate-fade-in">
+                        <NumberParam label="Token Wide Spread (BPS)" value={local.exit?.token_wide_spread_bps ?? 3000}
+                          min={1000} max={5000} step={100} onChange={(v) => update('exit', 'token_wide_spread_bps', v)} />
+                        <NumberParam label="BTC Spread Stable (BPS)" value={local.exit?.btc_spread_stable_bps ?? 500}
+                          min={100} max={1000} step={50} onChange={(v) => update('exit', 'btc_spread_stable_bps', v)} />
+                      </div>
+                    )}
+                    <ToggleParam
+                      label="Delta Scaling (ATR)"
+                      value={local.exit?.delta_scaling_enabled ?? true}
+                      onChange={(v) => update('exit', 'delta_scaling_enabled', v)}
+                      color="bg-accent-green"
+                      description="Scale TP based on BTC 15m ATR volatility"
+                    />
+                    {local.exit?.delta_scaling_enabled && (
+                      <div className="space-y-3 mt-3 animate-fade-in">
+                        <NumberParam label="Base TP %" value={local.exit?.atr_base_tp_pct ?? 0.25}
+                          min={0.10} max={0.50} step={0.01} onChange={(v) => update('exit', 'atr_base_tp_pct', v)} />
+                        <NumberParam label="ATR Scale Factor" value={local.exit?.atr_scale_factor ?? 0.5}
+                          min={0.1} max={1.0} step={0.1} onChange={(v) => update('exit', 'atr_scale_factor', v)} />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

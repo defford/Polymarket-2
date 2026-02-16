@@ -13,7 +13,7 @@ import pandas as pd
 from models import CompositeSignal, Layer1Signal, Layer2Signal, Side, MarketInfo
 from config import config_manager
 from signals.polymarket_ta import compute_layer1_signal
-from signals.btc_ta import compute_layer2_signal, compute_atr
+from signals.btc_ta import compute_layer2_signal, compute_atr, compute_atr_15m
 from signals.vwap_vroc import compute_vwap, compute_vroc
 from polymarket.client import polymarket_client
 from binance.client import binance_client
@@ -65,6 +65,9 @@ class SignalEngine:
         # --- ATR: Volatility context (always computed for data collection) ---
         atr_data = compute_atr(candles.get("1m"), period=14)
 
+        # --- 15m ATR: For delta scaling (TP adjustment) ---
+        atr_15m_data = compute_atr_15m(candles.get("15m"), period=14)
+
         # --- VWAP: always computed for data collection ---
         vwap_data = compute_vwap(
             candles.get("1m"),
@@ -78,7 +81,7 @@ class SignalEngine:
         )
 
         # --- Combine ---
-        composite = self._combine_signals(layer1, layer2, config, vwap_data, vroc_data, atr_data)
+        composite = self._combine_signals(layer1, layer2, config, vwap_data, vroc_data, atr_data, atr_15m_data)
 
         self._last_signal = composite
 
@@ -160,6 +163,7 @@ class SignalEngine:
         vwap_data: dict,
         vroc_data: dict,
         atr_data: dict,
+        atr_15m_data: dict = None,
     ) -> CompositeSignal:
         """
         Combine both layers into a composite signal.
@@ -175,6 +179,8 @@ class SignalEngine:
         volume rate of change is below the threshold, composite confidence is
         penalised, making it harder to pass the min_signal_confidence gate.
         """
+        if atr_15m_data is None:
+            atr_15m_data = {}
 
         l1_weight = config.layer1_weight
         l2_weight = config.layer2_weight
@@ -308,11 +314,15 @@ class SignalEngine:
             # Bayesian evidence categories
             l1_evidence=bin_l1_evidence(layer1.direction),
             l2_evidence=bin_l2_evidence(layer2.direction),
-            # ATR / Volatility context
+            # ATR / Volatility context (1m)
             atr_value=atr_data.get("atr_value"),
             atr_percent=atr_data.get("atr_percent"),
             atr_normalized_bps=atr_data.get("atr_normalized_bps"),
             volatility_regime=atr_data.get("volatility_regime"),
+            # ATR 15m for delta scaling
+            atr_15m_value=atr_15m_data.get("atr_15m_value"),
+            atr_15m_bps=atr_15m_data.get("atr_15m_bps"),
+            atr_15m_percentile=atr_15m_data.get("atr_15m_percentile"),
             # Layer disagreement
             layer_disagreement=disagreement,
         )

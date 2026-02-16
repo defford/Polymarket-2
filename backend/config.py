@@ -121,6 +121,26 @@ class ExitConfig:
     low_conviction_threshold: float = 0.25   # conviction < this = tighten exits
     low_conviction_trail_pct: float = 0.001  # 0.1% trail for low-conviction positions
 
+    # Divergence Monitor — detect token noise vs legitimate BTC signal
+    divergence_monitor_enabled: bool = True
+    token_noise_threshold_bps: float = 10.0   # Token must drop > this BPS
+    btc_stable_threshold_bps: float = 2.0     # BTC must move < this BPS to classify as noise
+
+    # Signal Decay E-Stop — emergency exit when BTC conviction collapses
+    signal_decay_estop_enabled: bool = True
+    signal_decay_threshold: float = 0.15      # L2 confidence below this = immediate exit
+
+    # Liquidity Guard — prevent stop-hunts during illiquid conditions
+    liquidity_guard_enabled: bool = True
+    token_wide_spread_bps: float = 3000.0     # Token spread > this = potential stop-hunt
+    btc_spread_stable_bps: float = 500.0      # BTC spread change < this = stable
+
+    # Delta Scaling — ATR-based TP adjustment
+    delta_scaling_enabled: bool = True
+    atr_base_tp_pct: float = 0.25             # Base TP at median ATR
+    atr_scale_factor: float = 0.5             # TP adjustment per ATR std dev
+    atr_reference_window: int = 100           # Periods for ATR percentile calculation
+
 
 @dataclass
 class TradingConfig:

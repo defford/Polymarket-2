@@ -50,6 +50,8 @@ class OrderManager:
         session_id: Optional[int] = None,
         max_retries: int = 5,
         entry_conviction: float = 0.0,
+        entry_btc_price: float = 0.0,
+        entry_btc_spread_bps: float = 0.0,
     ) -> Optional[Trade]:
         """
         Place an order on the active market.
@@ -64,6 +66,8 @@ class OrderManager:
             signal_score: The signal strength that triggered this trade
             max_retries: Number of seconds to wait for a fill (1 retry/sec)
             entry_conviction: The composite_confidence at entry (for conviction scaling)
+            entry_btc_price: BTC price at entry (for divergence monitoring)
+            entry_btc_spread_bps: BTC spread at entry (for liquidity guard)
 
         Returns:
             Trade object if successful, None otherwise
@@ -198,6 +202,8 @@ class OrderManager:
                 trough_price=price,
                 entry_time=datetime.now(timezone.utc),
                 entry_conviction=entry_conviction,
+                entry_btc_price=entry_btc_price,
+                entry_btc_spread_bps=entry_btc_spread_bps,
                 is_dry_run=True,
             )
 
@@ -400,6 +406,8 @@ class OrderManager:
                     trough_price=price,
                     entry_time=datetime.now(timezone.utc),
                     entry_conviction=entry_conviction,
+                    entry_btc_price=entry_btc_price,
+                    entry_btc_spread_bps=entry_btc_spread_bps,
                     is_dry_run=False,
                 )
             else:
