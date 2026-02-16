@@ -589,6 +589,43 @@ export default function ConfigPanel({ config, configEnabled, onUpdate, onToggleC
 
                   <div className="pt-2 border-t border-surface-2">
                     <ToggleParam
+                      label="Survival Buffer"
+                      value={local.exit?.survival_buffer_enabled ?? true}
+                      onChange={(v) => update('exit', 'survival_buffer_enabled', v)}
+                      color="bg-accent-yellow"
+                      description="15 BPS hard stop for first 180s, no trailing"
+                    />
+                    {local.exit?.survival_buffer_enabled && (
+                      <div className="space-y-3 mt-3 animate-fade-in">
+                        <NumberParam label="Buffer Duration (sec)" value={local.exit?.survival_buffer_seconds ?? 180}
+                          min={30} max={300} step={10} onChange={(v) => update('exit', 'survival_buffer_seconds', v)} />
+                        <NumberParam label="Hard Stop (BPS)" value={local.exit?.survival_hard_stop_bps ?? 15}
+                          min={5} max={100} step={5} onChange={(v) => update('exit', 'survival_hard_stop_bps', v)} />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-surface-2">
+                    <p className="text-xs font-display font-semibold text-text-secondary uppercase tracking-wider mb-3">
+                      Conviction Scaling
+                    </p>
+                    <div className="space-y-3">
+                      <div className="text-2xs text-text-dim mb-2">
+                        Adjust exits based on entry conviction (composite_confidence)
+                      </div>
+                      <NumberParam label="High Conviction Threshold" value={local.exit?.high_conviction_threshold ?? 0.45}
+                        min={0.3} max={0.9} step={0.05} onChange={(v) => update('exit', 'high_conviction_threshold', v)} />
+                      <NumberParam label="High Conviction TP %" value={local.exit?.high_conviction_tp_pct ?? 0.35}
+                        min={0.1} max={0.6} step={0.05} onChange={(v) => update('exit', 'high_conviction_tp_pct', v)} />
+                      <NumberParam label="Low Conviction Threshold" value={local.exit?.low_conviction_threshold ?? 0.25}
+                        min={0.1} max={0.4} step={0.05} onChange={(v) => update('exit', 'low_conviction_threshold', v)} />
+                      <NumberParam label="Low Conviction Trail %" value={local.exit?.low_conviction_trail_pct ?? 0.001}
+                        min={0.001} max={0.05} step={0.001} onChange={(v) => update('exit', 'low_conviction_trail_pct', v)} />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-surface-2">
+                    <ToggleParam
                       label="Pressure Scaling (BTC)"
                       value={local.exit?.pressure_scaling_enabled ?? true}
                       onChange={(v) => update('exit', 'pressure_scaling_enabled', v)}

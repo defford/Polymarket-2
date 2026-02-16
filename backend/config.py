@@ -110,6 +110,17 @@ class ExitConfig:
     scaling_tp_pct: float = 0.50             # fraction of gain used to tighten trailing stop
     scaling_tp_min_trail: float = 0.02       # floor: trailing stop can never go below 2%
 
+    # Survival Buffer — initial protection window
+    survival_buffer_enabled: bool = True     # master switch for survival buffer
+    survival_buffer_seconds: int = 180       # first 180s: hard stop only, no trailing
+    survival_hard_stop_bps: float = 15.0     # 15 BPS (0.15%) hard stop during buffer
+
+    # Dynamic Conviction Scaling
+    high_conviction_threshold: float = 0.45  # conviction > this = extended TP
+    high_conviction_tp_pct: float = 0.35     # higher TP for high-conviction trades
+    low_conviction_threshold: float = 0.25   # conviction < this = tighten exits
+    low_conviction_trail_pct: float = 0.001  # 0.1% trail for low-conviction positions
+
 
 @dataclass
 class TradingConfig:

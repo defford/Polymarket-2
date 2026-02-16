@@ -166,6 +166,7 @@ class Position(BaseModel):
     peak_price: float = 0.0       # highest price since entry (for trailing stop)
     trough_price: float = 0.0     # lowest price since entry (for MAE tracking)
     entry_time: Optional[datetime] = None  # when we entered
+    entry_conviction: float = 0.0  # composite_confidence at entry (for conviction scaling)
     is_dry_run: bool = True
 
 

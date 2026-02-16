@@ -49,6 +49,7 @@ class OrderManager:
         buy_state_snapshot: Optional[MarketStateSnapshot] = None,
         session_id: Optional[int] = None,
         max_retries: int = 5,
+        entry_conviction: float = 0.0,
     ) -> Optional[Trade]:
         """
         Place an order on the active market.
@@ -62,6 +63,7 @@ class OrderManager:
             is_dry_run: If True, don't actually place the order
             signal_score: The signal strength that triggered this trade
             max_retries: Number of seconds to wait for a fill (1 retry/sec)
+            entry_conviction: The composite_confidence at entry (for conviction scaling)
 
         Returns:
             Trade object if successful, None otherwise
@@ -195,6 +197,7 @@ class OrderManager:
                 peak_price=price,
                 trough_price=price,
                 entry_time=datetime.now(timezone.utc),
+                entry_conviction=entry_conviction,
                 is_dry_run=True,
             )
 
@@ -396,6 +399,7 @@ class OrderManager:
                     peak_price=price,
                     trough_price=price,
                     entry_time=datetime.now(timezone.utc),
+                    entry_conviction=entry_conviction,
                     is_dry_run=False,
                 )
             else:

@@ -322,7 +322,6 @@ class TradingEngine:
                     await asyncio.sleep(1.0)
                     continue
 
-                # Update dashboard market prices from WS cache
                 market = self._discovery.current_market
                 if market:
                     up_mid = self._stream.prices.get_midpoint(market.up_token_id)
@@ -332,20 +331,17 @@ class TradingEngine:
                     if down_mid is not None:
                         market.down_price = down_mid
 
-                # Iterate over all open positions
                 exited = False
                 for condition_id, position in list(self._orders._open_positions.items()):
                     ws_price = self._stream.prices.get_midpoint(position.token_id)
                     if ws_price is None or not self._stream.is_price_fresh(position.token_id):
-                        # WS stale — fall back to HTTP for safety
                         try:
                             ws_price = self._polymarket.get_midpoint(position.token_id)
                         except Exception:
-                            continue  # Can't get price at all, skip this check
+                            continue
                     if ws_price is None:
                         continue
 
-                    # Update position with real-time WS price
                     position.current_price = ws_price
                     position.unrealized_pnl = (ws_price - position.entry_price) * position.size
                     if ws_price > position.peak_price:
@@ -353,13 +349,62 @@ class TradingEngine:
                     if ws_price < position.trough_price or position.trough_price == 0:
                         position.trough_price = ws_price
 
-                    # Check minimum hold time
                     if position.entry_time:
                         held = (datetime.now(timezone.utc) - position.entry_time).total_seconds()
                         if held < exit_config.min_hold_seconds:
                             continue
+                    else:
+                        held = 999
 
-                    # Determine time-based trailing stop
+                    in_survival_buffer = (
+                        exit_config.survival_buffer_enabled
+                        and held < exit_config.survival_buffer_seconds
+                    )
+
+                    conviction = position.entry_conviction if position.entry_conviction > 0 else 0.5
+                    if conviction >= exit_config.high_conviction_threshold:
+                        conviction_tier = "high"
+                        effective_tp = exit_config.high_conviction_tp_pct
+                    elif conviction <= exit_config.low_conviction_threshold:
+                        conviction_tier = "low"
+                        effective_tp = exit_config.hard_tp_pct
+                    else:
+                        conviction_tier = "normal"
+                        effective_tp = exit_config.hard_tp_pct
+
+                    is_profitable = position.current_price > position.entry_price
+
+                    if in_survival_buffer:
+                        if position.current_price > 0 and position.entry_price > 0:
+                            survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
+                            drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
+                            if drop_from_entry >= survival_hard_stop:
+                                reason = (
+                                    f"survival_hard_stop: price {position.current_price:.3f} dropped "
+                                    f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
+                                    f"(survival buffer: {survival_hard_stop:.2%} for {held:.0f}s) (WS fast-check)"
+                                )
+                                logger.info(f"🛑 FAST EXIT -- {reason}")
+                                await self._execute_exit(condition_id, reason, "hard_stop", time_zone="SURVIVAL")
+                                exited = True
+                                break
+                        continue
+
+                    if not is_profitable:
+                        if position.current_price > 0 and position.entry_price > 0:
+                            drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
+                            if drop_from_entry >= exit_config.hard_stop_pct:
+                                reason = (
+                                    f"hard_stop: price {position.current_price:.3f} dropped "
+                                    f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
+                                    f"(hard limit: {exit_config.hard_stop_pct:.0%}) (WS fast-check)"
+                                )
+                                logger.info(f"🛑 FAST EXIT -- {reason}")
+                                await self._execute_exit(condition_id, reason, "hard_stop")
+                                exited = True
+                                break
+                        continue
+
                     time_remaining = self._discovery.time_until_close()
                     base_trailing = exit_config.trailing_stop_pct
                     time_zone = "normal"
@@ -371,21 +416,22 @@ class TradingEngine:
                             base_trailing = exit_config.tightened_trailing_pct
                             time_zone = "TIGHT"
 
-                    # --- Scaling Take Profit: tighten trailing stop based on unrealized gain ---
-                    if exit_config.scaling_tp_enabled and position.entry_price > 0 and position.current_price > position.entry_price:
+                    if conviction_tier == "low":
+                        base_trailing = min(base_trailing, exit_config.low_conviction_trail_pct)
+
+                    if exit_config.scaling_tp_enabled and position.entry_price > 0 and is_profitable:
                         gain_pct = (position.current_price - position.entry_price) / position.entry_price
                         stop_reduction = exit_config.scaling_tp_pct * gain_pct
                         base_trailing = base_trailing * (1.0 - stop_reduction)
                         base_trailing = max(base_trailing, exit_config.scaling_tp_min_trail)
 
-                    # --- Trailing stop (no BTC pressure — slow loop handles that) ---
                     if position.peak_price > 0 and position.current_price > 0:
                         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
                         if drop_from_peak >= base_trailing:
                             reason = (
                                 f"trailing_stop: price {position.current_price:.3f} dropped "
                                 f"{drop_from_peak:.1%} from peak {position.peak_price:.3f} | "
-                                f"effective={base_trailing:.1%} [{time_zone}] (WS fast-check)"
+                                f"effective={base_trailing:.1%} [{time_zone}] ({conviction_tier} conviction) (WS fast-check)"
                             )
                             logger.info(f"🛑 FAST EXIT -- {reason}")
                             await self._execute_exit(
@@ -396,8 +442,7 @@ class TradingEngine:
                             exited = True
                             break
 
-                    # --- Hard stop (absolute safety net) ---
-                    if position.entry_price > 0 and position.current_price > 0:
+                    if position.current_price > 0 and position.entry_price > 0:
                         drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
                         if drop_from_entry >= exit_config.hard_stop_pct:
                             reason = (
@@ -410,14 +455,26 @@ class TradingEngine:
                             exited = True
                             break
 
-                    # --- Hard Take Profit (absolute profit ceiling) ---
                     if exit_config.hard_tp_enabled and position.entry_price > 0 and position.current_price > 0:
                         gain_from_entry = (position.current_price - position.entry_price) / position.entry_price
-                        if gain_from_entry >= exit_config.hard_tp_pct:
+                        if gain_from_entry >= effective_tp:
                             reason = (
                                 f"hard_take_profit: price {position.current_price:.3f} rose "
                                 f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
-                                f"(hard TP limit: {exit_config.hard_tp_pct:.0%}) (WS fast-check)"
+                                f"(TP limit: {effective_tp:.0%}, {conviction_tier} conviction) (WS fast-check)"
+                            )
+                            logger.info(f"🎯 FAST EXIT -- {reason}")
+                            await self._execute_exit(condition_id, reason, "hard_take_profit")
+                            exited = True
+                            break
+
+                    if conviction_tier == "low" and position.current_price > position.entry_price:
+                        tick = 0.01
+                        target_price = position.current_price + tick
+                        if position.current_price >= target_price - tick:
+                            reason = (
+                                f"low_conviction_take_profit: conviction={conviction:.2f} < {exit_config.low_conviction_threshold:.2f} | "
+                                f"securing win at {position.current_price:.3f} (WS fast-check)"
                             )
                             logger.info(f"🎯 FAST EXIT -- {reason}")
                             await self._execute_exit(condition_id, reason, "hard_take_profit")
@@ -893,6 +950,7 @@ class TradingEngine:
                 buy_state_snapshot=buy_state_snapshot,
                 session_id=self._current_session_id,
                 max_retries=config.trading.max_order_retries,
+                entry_conviction=signal.composite_confidence,
             )
 
         if trade:

@@ -5,11 +5,13 @@ Evaluates open positions against stop-loss conditions each tick and returns
 exit decisions. Does NOT execute sells — the engine handles that.
 
 Checks:
-1. Trailing stop — sell if price drops X% from peak
-2. Time-decay tightening — tighter stops as window closes
-3. BTC pressure scaling — short-term TA widens/tightens stops dynamically
-4. Signal reversal — exit if signals flip hard against position
-5. Hard floor — absolute max loss per trade
+1. Survival Buffer — 15 BPS hard stop for first 180s, no trailing
+2. Trailing stop — sell if price drops X% from peak (only after buffer, if profitable)
+3. Time-decay tightening — tighter stops as window closes
+4. BTC pressure scaling — short-term TA widens/tightens stops dynamically
+5. Signal reversal — exit if signals flip hard against position
+6. Hard floor — absolute max loss per trade
+7. Conviction scaling — adjust TP/trail based on entry conviction
 
 The key insight: the TOKEN price lags BTC reality. If 1m/5m/15m EMAs
 are moving hard against your position, the token hasn't caught up yet.
@@ -111,8 +113,9 @@ def evaluate_exit(
             reason_category: "trailing_stop" | "hard_take_profit" | "hard_stop" | "signal_reversal"
             effective_trailing_pct: The final trailing stop % used
             pressure_multiplier: BTC pressure multiplier applied
-            time_zone: "normal" | "TIGHT" | "FINAL"
+            time_zone: "normal" | "TIGHT" | "FINAL" | "SURVIVAL"
             btc_pressure: Raw BTC pressure value
+            conviction_tier: "high" | "normal" | "low"
         Or None if no exit warranted.
     """
     _cfg = config_mgr if config_mgr is not None else config_manager
@@ -126,15 +129,28 @@ def evaluate_exit(
 
     now = datetime.now(timezone.utc)
 
-    # --- Check minimum hold time ---
     if position.entry_time:
         held_seconds = (now - position.entry_time).total_seconds()
         if held_seconds < exit_config.min_hold_seconds:
             return None
     else:
-        held_seconds = 999  # unknown entry time, don't block
+        held_seconds = 999
 
-    # --- Compute BTC short-term pressure ---
+    in_survival_buffer = (
+        exit_config.survival_buffer_enabled
+        and held_seconds < exit_config.survival_buffer_seconds
+    )
+
+    conviction = position.entry_conviction if position.entry_conviction > 0 else 0.5
+    if conviction >= exit_config.high_conviction_threshold:
+        conviction_tier = "high"
+    elif conviction <= exit_config.low_conviction_threshold:
+        conviction_tier = "low"
+    else:
+        conviction_tier = "normal"
+
+    is_profitable = position.current_price > position.entry_price
+
     try:
         candles = _btc.fetch_all_timeframes()
         signal_config = _cfg.config.signal
@@ -145,12 +161,15 @@ def evaluate_exit(
 
     pressure_multiplier = _compute_pressure_multiplier(position.side, pressure, config_mgr=_cfg)
 
-    # --- Determine base trailing stop from time remaining ---
     time_remaining = _discovery.time_until_close()
     base_trailing = exit_config.trailing_stop_pct
+    effective_tp = exit_config.hard_tp_pct
 
     time_zone_label = "normal"
-    if time_remaining is not None:
+    if in_survival_buffer:
+        time_zone_label = "SURVIVAL"
+        base_trailing = 1.0
+    elif time_remaining is not None:
         if time_remaining <= exit_config.final_seconds:
             base_trailing = exit_config.final_trailing_pct
             time_zone_label = "FINAL"
@@ -158,11 +177,14 @@ def evaluate_exit(
             base_trailing = exit_config.tightened_trailing_pct
             time_zone_label = "TIGHT"
 
-    # --- Apply pressure multiplier to trailing stop ---
+    if conviction_tier == "high":
+        effective_tp = exit_config.high_conviction_tp_pct
+    elif conviction_tier == "low":
+        base_trailing = min(base_trailing, exit_config.low_conviction_trail_pct)
+
     effective_trailing = base_trailing * pressure_multiplier
 
-    # --- Scaling Take Profit: tighten trailing stop based on unrealized gain ---
-    if exit_config.scaling_tp_enabled and position.entry_price > 0 and position.current_price > position.entry_price:
+    if exit_config.scaling_tp_enabled and position.entry_price > 0 and is_profitable:
         gain_pct = (position.current_price - position.entry_price) / position.entry_price
         stop_reduction = exit_config.scaling_tp_pct * gain_pct
         effective_trailing = effective_trailing * (1.0 - stop_reduction)
@@ -171,32 +193,86 @@ def evaluate_exit(
     pressure_val = pressure.get("pressure", 0.0)
     momentum_val = pressure.get("momentum", 0.0)
 
-    # --- Log the exit check state when interesting ---
     if position.current_price > 0 and position.peak_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
 
-        # Log when position is losing ground or BTC pressure is notable
-        if drop_from_peak > 0.03 or abs(pressure_val) > 0.2:
+        if drop_from_peak > 0.03 or abs(pressure_val) > 0.2 or in_survival_buffer:
             time_str = f"{time_remaining:.0f}s" if time_remaining is not None else "?"
             logger.info(
                 f"📉 EXIT CHECK: {position.side.value.upper()} | "
                 f"entry={position.entry_price:.3f} peak={position.peak_price:.3f} "
                 f"now={position.current_price:.3f} (drop={drop_from_peak:.1%}) | "
-                f"BTC pressure={pressure_val:+.2f} mom={momentum_val:+.2f} -> "
-                f"multiplier={pressure_multiplier:.2f} | "
-                f"stop={effective_trailing:.1%} ({time_zone_label}) | "
-                f"time_left={time_str}"
+                f"conviction={conviction:.2f} ({conviction_tier}) | "
+                f"BTC pressure={pressure_val:+.2f} -> multiplier={pressure_multiplier:.2f} | "
+                f"stop={effective_trailing:.1%} TP={effective_tp:.1%} ({time_zone_label}) | "
+                f"held={held_seconds:.0f}s left={time_str}"
             )
 
-    # Base decision metadata (shared across all exit types)
     base_decision = {
         "effective_trailing_pct": effective_trailing,
         "pressure_multiplier": pressure_multiplier,
         "time_zone": time_zone_label,
         "btc_pressure": pressure_val,
+        "conviction_tier": conviction_tier,
     }
 
-    # --- Check 1: Trailing stop (pressure-adjusted) ---
+    if in_survival_buffer:
+        if position.current_price > 0 and position.entry_price > 0:
+            survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
+            drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
+
+            if drop_from_entry >= survival_hard_stop:
+                reason = (
+                    f"survival_hard_stop: price {position.current_price:.3f} dropped "
+                    f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
+                    f"(survival buffer: {survival_hard_stop:.2%} for {held_seconds:.0f}s)"
+                )
+                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
+        return None
+
+    if not is_profitable:
+        if position.current_price > 0 and position.entry_price > 0:
+            drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
+
+            if drop_from_entry >= exit_config.hard_stop_pct:
+                reason = (
+                    f"hard_stop: price {position.current_price:.3f} dropped "
+                    f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
+                    f"(hard limit: {exit_config.hard_stop_pct:.0%})"
+                )
+                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
+
+        if signal and signal.recommended_side is not None:
+            position_is_up = position.side == Side.UP
+            signal_is_against = (
+                (position_is_up and signal.composite_score < -exit_config.signal_reversal_threshold)
+                or
+                (not position_is_up and signal.composite_score > exit_config.signal_reversal_threshold)
+            )
+
+            if signal_is_against:
+                reason = (
+                    f"signal_reversal: holding {position.side.value.upper()} but "
+                    f"signal={signal.composite_score:+.3f} (underwater, no trailing)"
+                )
+                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                return {**base_decision, "reason": reason, "reason_category": "signal_reversal"}
+
+        return None
+
+    if conviction_tier == "low":
+        tick = 0.01
+        target_price = position.current_price + tick
+        if position.current_price >= target_price - tick:
+            reason = (
+                f"low_conviction_take_profit: conviction={conviction:.2f} < {exit_config.low_conviction_threshold:.2f} | "
+                f"securing win at {position.current_price:.3f}"
+            )
+            logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
+            return {**base_decision, "reason": reason, "reason_category": "hard_take_profit"}
+
     if position.peak_price > 0 and position.current_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
 
@@ -204,27 +280,24 @@ def evaluate_exit(
             reason = (
                 f"trailing_stop: price {position.current_price:.3f} dropped "
                 f"{drop_from_peak:.1%} from peak {position.peak_price:.3f} | "
-                f"base_stop={base_trailing:.0%} x pressure={pressure_multiplier:.2f} "
-                f"-> effective={effective_trailing:.1%} | "
-                f"BTC pressure={pressure_val:+.2f} [{time_zone_label}]"
+                f"effective={effective_trailing:.1%} [{time_zone_label}] | "
+                f"conviction={conviction_tier}"
             )
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "trailing_stop"}
 
-    # --- Check 1.5: Hard Take Profit ---
     if exit_config.hard_tp_enabled and position.entry_price > 0 and position.current_price > 0:
         gain_from_entry = (position.current_price - position.entry_price) / position.entry_price
-        if gain_from_entry >= exit_config.hard_tp_pct:
+        if gain_from_entry >= effective_tp:
             reason = (
                 f"hard_take_profit: price {position.current_price:.3f} rose "
                 f"{gain_from_entry:.1%} from entry {position.entry_price:.3f} "
-                f"(hard TP limit: {exit_config.hard_tp_pct:.0%}) | "
-                f"BTC pressure={pressure_val:+.2f} [{time_zone_label}]"
+                f"(TP limit: {effective_tp:.0%}, conviction={conviction_tier}) | "
+                f"BTC pressure={pressure_val:+.2f}"
             )
             logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "hard_take_profit"}
 
-    # --- Check 2: Hard floor stop (NOT pressure-adjusted -- absolute safety net) ---
     if position.current_price > 0 and position.entry_price > 0:
         drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
 
@@ -237,7 +310,6 @@ def evaluate_exit(
             logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
 
-    # --- Check 3: Signal reversal ---
     if signal and signal.recommended_side is not None:
         position_is_up = position.side == Side.UP
         signal_is_against = (

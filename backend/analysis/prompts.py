@@ -142,6 +142,34 @@ PARAM_RANGES = {
             "min": 0.05, "max": 0.30, "type": "float",
             "desc": "Pressure magnitude below this = no adjustment.",
         },
+        "survival_buffer_enabled": {
+            "type": "bool",
+            "desc": "Enable survival buffer: 15 BPS hard stop for first 180s, no trailing.",
+        },
+        "survival_buffer_seconds": {
+            "min": 30, "max": 300, "type": "int",
+            "desc": "Duration of survival buffer in seconds (hard stop only, no trailing).",
+        },
+        "survival_hard_stop_bps": {
+            "min": 5, "max": 100, "type": "float",
+            "desc": "Hard stop in basis points during survival buffer (15 = 0.15%).",
+        },
+        "high_conviction_threshold": {
+            "min": 0.3, "max": 0.9, "type": "float",
+            "desc": "Conviction above this gets extended TP (high conviction trades).",
+        },
+        "high_conviction_tp_pct": {
+            "min": 0.1, "max": 0.6, "type": "float",
+            "desc": "Take profit % for high conviction trades (conviction > threshold).",
+        },
+        "low_conviction_threshold": {
+            "min": 0.1, "max": 0.4, "type": "float",
+            "desc": "Conviction below this triggers tight exits (low conviction trades).",
+        },
+        "low_conviction_trail_pct": {
+            "min": 0.001, "max": 0.05, "type": "float",
+            "desc": "Tight trailing stop % for low conviction positions (0.001 = 0.1%).",
+        },
     },
     "trading": {
         "order_type": {
