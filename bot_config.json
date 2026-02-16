@@ -75,7 +75,7 @@
     "scaling_tp_min_trail": 0.02,
     "survival_buffer_enabled": true,
     "survival_buffer_seconds": 180,
-    "survival_hard_stop_bps": 15.0,
+    "survival_hard_stop_bps": 1000.0,
     "high_conviction_threshold": 0.45,
     "high_conviction_tp_pct": 0.35,
     "low_conviction_threshold": 0.25,
