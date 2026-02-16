@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings, Sliders, Shield, Zap, Save, RotateCcw, AlertTriangle, FlaskConical } from 'lucide-react'
+import { Settings, Sliders, Shield, Zap, Save, RotateCcw, AlertTriangle, FlaskConical, Power } from 'lucide-react'
 
 function Section({ icon: Icon, title, description, children, color = 'text-text-dim' }) {
   return (
@@ -104,7 +104,7 @@ function ToggleParam({ label, value, onChange, color = 'bg-accent-green' }) {
   )
 }
 
-export default function ConfigPanel({ config, onUpdate }) {
+export default function ConfigPanel({ config, configEnabled, onUpdate, onToggleConfigEnabled }) {
   const [local, setLocal] = useState(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -176,6 +176,48 @@ export default function ConfigPanel({ config, onUpdate }) {
           </div>
         </div>
       )}
+
+      {/* Config Toggle */}
+      <div className="card animate-slide-up">
+        <div className="card-header">
+          <div className="flex items-center gap-2">
+            <Power className={`w-4 h-4 ${configEnabled ? 'text-accent-green' : 'text-text-dim'}`} />
+            <span className="card-title">Custom Config</span>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-text-secondary">
+                {configEnabled ? 'Using custom configuration' : 'Using default configuration'}
+              </p>
+              <p className="text-2xs text-text-dim mt-1">
+                {configEnabled
+                  ? 'Disable to use default values while refining strategy'
+                  : 'Enable to apply custom settings from this profile'}
+              </p>
+            </div>
+            <button
+              onClick={() => onToggleConfigEnabled && onToggleConfigEnabled(!configEnabled)}
+              className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer ${
+                configEnabled ? 'bg-accent-green' : 'bg-surface-3'
+              }`}
+            >
+              <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                configEnabled ? 'translate-x-6' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
+          {!configEnabled && (
+            <div className="mt-3 bg-accent-yellow/10 border border-accent-yellow/20 rounded-lg p-3 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-accent-yellow mt-0.5 shrink-0" />
+              <p className="text-xs text-accent-yellow">
+                Config is disabled. All parameters below show the saved profile values, but the bot is currently using default settings.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Mode */}
       <Section icon={Zap} title="Bot Mode" color="text-accent-cyan">

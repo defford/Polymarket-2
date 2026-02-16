@@ -13,24 +13,45 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from config import BotConfig
+from config import BotConfig, SignalConfig, RiskConfig, ExitConfig, TradingConfig, BayesianConfig
 from models import BotState
 import database as db
 
 logger = logging.getLogger(__name__)
 
 
-class BotConfigManager:
-    """Per-bot config manager.  Stores in-memory, persisted to DB by caller."""
+def get_default_config() -> BotConfig:
+    return BotConfig()
 
-    def __init__(self, initial_config: BotConfig):
+
+class BotConfigManager:
+    """Per-bot config manager. Stores in-memory, persisted to DB by caller."""
+
+    def __init__(self, initial_config: BotConfig, config_enabled: bool = True):
         self._lock = threading.Lock()
         self._config = initial_config
+        self._config_enabled = config_enabled
+        self._default_config = BotConfig()
 
     @property
     def config(self) -> BotConfig:
         with self._lock:
+            if self._config_enabled:
+                return self._config
+            return self._default_config
+
+    @property
+    def saved_config(self) -> BotConfig:
+        with self._lock:
             return self._config
+
+    def is_config_enabled(self) -> bool:
+        with self._lock:
+            return self._config_enabled
+
+    def set_config_enabled(self, enabled: bool):
+        with self._lock:
+            self._config_enabled = enabled
 
     def update(self, data: dict) -> BotConfig:
         with self._lock:
@@ -53,15 +74,16 @@ class BotInstance:
         name: str,
         config: BotConfig,
         description: str = "",
+        config_enabled: bool = True,
         polymarket_client=None,
         binance_client=None,
     ):
         self.bot_id = bot_id
         self.name = name
         self.description = description
+        self._config_enabled = config_enabled
 
-        # Per-bot config manager (in-memory, DB-persisted)
-        self.config_manager = BotConfigManager(config)
+        self.config_manager = BotConfigManager(config, config_enabled=config_enabled)
 
         # Injected clients (PolymarketClient is per-bot; BinanceClient is shared read-only)
         self._polymarket_client = polymarket_client
@@ -145,7 +167,17 @@ class BotInstance:
         return self._trading_engine.get_state()
 
     def get_config(self) -> BotConfig:
+        return self.config_manager.saved_config
+
+    def get_effective_config(self) -> BotConfig:
         return self.config_manager.config
+
+    def is_config_enabled(self) -> bool:
+        return self.config_manager.is_config_enabled()
+
+    def set_config_enabled(self, enabled: bool):
+        self.config_manager.set_config_enabled(enabled)
+        db.update_bot(self.bot_id, config_enabled=1 if enabled else 0)
 
     def update_config(self, data: dict) -> BotConfig:
         updated = self.config_manager.update(data)

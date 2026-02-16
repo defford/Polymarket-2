@@ -75,6 +75,7 @@ def init_db():
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             config_json TEXT NOT NULL,
+            config_enabled INTEGER NOT NULL DEFAULT 1,
             mode TEXT NOT NULL DEFAULT 'dry_run',
             status TEXT NOT NULL DEFAULT 'stopped',
             created_at TEXT NOT NULL,
@@ -119,6 +120,12 @@ def init_db():
     # Migration: Add l2_evidence column to trades
     try:
         conn.execute("ALTER TABLE trades ADD COLUMN l2_evidence TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: Add config_enabled column to bots
+    try:
+        conn.execute("ALTER TABLE bots ADD COLUMN config_enabled INTEGER NOT NULL DEFAULT 1")
     except sqlite3.OperationalError:
         pass
 
@@ -562,6 +569,7 @@ def _row_to_bot(row: sqlite3.Row) -> BotRecord:
         name=row["name"],
         description=row["description"] or "",
         config_json=row["config_json"],
+        config_enabled=bool(row["config_enabled"]) if "config_enabled" in row.keys() else True,
         mode=row["mode"],
         status=row["status"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,

@@ -22,25 +22,32 @@ export default function BotDetailView({ botId, botState, onBack }) {
   const { get, post, put } = useApi()
   const [botInfo, setBotInfo] = useState(null)
   const [config, setConfig] = useState(null)
+  const [configEnabled, setConfigEnabled] = useState(true)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [selectedTrade, setSelectedTrade] = useState(null)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editName, setEditName] = useState('')
 
-  // Fetch bot info from the list endpoint
   useEffect(() => {
     get('/api/swarm').then(data => {
       if (data) {
         const bot = data.find(b => b.id === botId)
-        if (bot) setBotInfo(bot)
+        if (bot) {
+          setBotInfo(bot)
+          setConfigEnabled(bot.config_enabled ?? true)
+        }
       }
     })
   }, [get, botId])
 
-  // Fetch config
   useEffect(() => {
     get(`/api/swarm/${botId}/config`).then(data => {
-      if (data) setConfig(data)
+      if (data) {
+        setConfig(data.config || data)
+        if (data.config_enabled !== undefined) {
+          setConfigEnabled(data.config_enabled)
+        }
+      }
     })
   }, [get, botId])
 
@@ -59,7 +66,14 @@ export default function BotDetailView({ botId, botState, onBack }) {
 
   const handleConfigUpdate = useCallback(async (updates) => {
     const data = await put(`/api/swarm/${botId}/config`, updates)
-    if (data) setConfig(data)
+    if (data) setConfig(data.config || data)
+  }, [put, botId])
+
+  const handleToggleConfigEnabled = useCallback(async (enabled) => {
+    const data = await put(`/api/swarm/${botId}`, { config_enabled: enabled })
+    if (data) {
+      setConfigEnabled(enabled)
+    }
   }, [put, botId])
 
   const handleEditName = () => {
@@ -203,7 +217,12 @@ export default function BotDetailView({ botId, botState, onBack }) {
         ) : activeTab === 'history' ? (
           <SessionsPanel botId={botId} />
         ) : (
-          <ConfigPanel config={config} onUpdate={handleConfigUpdate} />
+          <ConfigPanel
+            config={config}
+            configEnabled={configEnabled}
+            onUpdate={handleConfigUpdate}
+            onToggleConfigEnabled={handleToggleConfigEnabled}
+          />
         )}
       </main>
     </div>

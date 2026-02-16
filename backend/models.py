@@ -251,6 +251,7 @@ class BotRecord(BaseModel):
     name: str
     description: str = ""
     config_json: str = "{}"  # serialized BotConfig
+    config_enabled: bool = True  # when False, bot uses default config
     mode: str = "dry_run"
     status: str = "stopped"
     created_at: Optional[datetime] = None
@@ -267,3 +268,4 @@ class CreateBotRequest(BaseModel):
 class UpdateBotRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    config_enabled: Optional[bool] = None

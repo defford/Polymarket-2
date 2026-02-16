@@ -47,6 +47,7 @@ class SwarmManager:
             config = BotConfig.from_dict(json.loads(bot_record.config_json))
             instance = self._create_instance(
                 bot_record.id, bot_record.name, config, bot_record.description,
+                config_enabled=bot_record.config_enabled,
             )
             self._bots[bot_record.id] = instance
             logger.info(f"Loaded bot #{bot_record.id}: {bot_record.name}")
@@ -86,6 +87,7 @@ class SwarmManager:
 
     def _create_instance(
         self, bot_id: int, name: str, config: BotConfig, description: str = "",
+        config_enabled: bool = True,
     ) -> BotInstance:
         # Each bot gets its own PolymarketClient to prevent
         # auth state clobbering when bots run in different modes.
@@ -96,6 +98,7 @@ class SwarmManager:
             name=name,
             config=config,
             description=description,
+            config_enabled=config_enabled,
             polymarket_client=bot_pm_client,
             binance_client=binance_client,
         )
@@ -161,6 +164,7 @@ class SwarmManager:
                 "description": instance.description,
                 "status": instance.status,
                 "mode": instance.get_config().mode,
+                "config_enabled": instance.is_config_enabled(),
                 "is_running": instance.is_running,
                 "total_pnl": state.total_pnl,
                 "daily_pnl": state.daily_pnl,

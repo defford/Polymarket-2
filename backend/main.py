@@ -223,7 +223,7 @@ async def export_swarm_latest_sessions():
 
 @app.put("/api/swarm/{bot_id}")
 async def update_bot_info(bot_id: int, request: UpdateBotRequest):
-    """Update bot name/description."""
+    """Update bot name/description/config_enabled."""
     instance = swarm_manager.get_bot(bot_id)
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
@@ -235,11 +235,14 @@ async def update_bot_info(bot_id: int, request: UpdateBotRequest):
     if request.description is not None:
         instance.description = request.description
         updates["description"] = request.description
+    if request.config_enabled is not None:
+        instance.set_config_enabled(request.config_enabled)
+        updates["config_enabled"] = 1 if request.config_enabled else 0
     if updates:
         updates["updated_at"] = datetime.now(timezone.utc)
         db.update_bot(bot_id, **updates)
 
-    return {"message": "Bot updated", "bot_id": bot_id}
+    return {"message": "Bot updated", "bot_id": bot_id, "config_enabled": instance.is_config_enabled()}
 
 
 @app.delete("/api/swarm/{bot_id}")
@@ -289,7 +292,11 @@ async def get_bot_config(bot_id: int):
     instance = swarm_manager.get_bot(bot_id)
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
-    return instance.get_config().to_dict()
+    return {
+        "config": instance.get_config().to_dict(),
+        "config_enabled": instance.is_config_enabled(),
+        "effective_config": instance.get_effective_config().to_dict(),
+    }
 
 
 @app.put("/api/swarm/{bot_id}/config")
@@ -301,7 +308,6 @@ async def update_bot_config(bot_id: int, request: ConfigUpdateRequest):
     try:
         data = request.model_dump(exclude_none=True)
         updated = instance.update_config(data)
-        # Persist to DB
         db.update_bot(
             bot_id,
             config_json=json.dumps(updated.to_dict()),
@@ -309,7 +315,10 @@ async def update_bot_config(bot_id: int, request: ConfigUpdateRequest):
             updated_at=datetime.now(timezone.utc),
         )
         logger.info(f"Bot #{bot_id} config updated: {list(data.keys())}")
-        return updated.to_dict()
+        return {
+            "config": updated.to_dict(),
+            "config_enabled": instance.is_config_enabled(),
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
