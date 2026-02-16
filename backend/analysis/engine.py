@@ -1137,7 +1137,7 @@ class AnalysisEngine:
             "stop_efficiency_by_timezone": timezone_result,
             "layer_disagreement_impact": disagreement_result,
             "liquidity_at_trailing_stop": liquidity_stats,
-            "btc_token_divergence": self._btc_token_divergence_analysis(trades_with_log),
+            "btc_token_divergence": self._btc_token_divergence_analysis(trades),
         }
 
     def _btc_token_divergence_analysis(self, trades_with_log: list[dict]) -> dict:
