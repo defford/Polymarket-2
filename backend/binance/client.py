@@ -20,6 +20,7 @@ import numpy as np
 
 from config import BINANCE_SYMBOL
 from binance.rate_limiter import binance_rate_limiter
+from binance.fallback import fallback_chain
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ class BinanceClient:
             "4h": 300,
             "1d": 600,
         }
+        self._fallback_mode = False
+        self._fallback_until = 0.0
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Lazy initialization of async HTTP client."""
@@ -122,8 +125,14 @@ class BinanceClient:
                 
                 if resp.status_code == 418:
                     ban_wait = await binance_rate_limiter.handle_418(headers)
+                    # Enable fallback mode for duration of ban
+                    self._fallback_mode = True
+                    self._fallback_until = time.time() + ban_wait
+                    logger.error(
+                        f"IP banned (418), enabling fallback mode for {ban_wait}s. "
+                        f"Will use CoinGecko/Kraken/CoinCap until {time.strftime('%H:%M:%S', time.localtime(self._fallback_until))}"
+                    )
                     if attempt < max_retries - 1:
-                        logger.error(f"IP banned (418), waiting {ban_wait}s")
                         await asyncio.sleep(ban_wait)
                         continue
                     return None, headers
@@ -235,12 +244,28 @@ class BinanceClient:
         if df is not None and not df.empty:
             return float(df.iloc[-1]["close"])
 
+        # Check if in fallback mode
+        if self._fallback_mode and time.time() < self._fallback_until:
+            client = await self._get_client()
+            price, provider = await fallback_chain.get_btc_price(client)
+            if price:
+                logger.info(f"Using fallback price from {provider}: ${price:.2f}")
+                return price
+
         endpoint = "/api/v3/ticker/price"
         params = {"symbol": BINANCE_SYMBOL}
         
         data, _ = await self._make_request(endpoint, params)
         if data:
             return float(data.get("price", 0))
+        
+        # Try fallback on Binance failure
+        client = await self._get_client()
+        price, provider = await fallback_chain.get_btc_price(client)
+        if price:
+            logger.warning(f"Binance failed, using fallback from {provider}: ${price:.2f}")
+            return price
+        
         return None
 
     async def get_orderbook(self, limit: int = 5) -> dict:
@@ -265,6 +290,21 @@ class BinanceClient:
                 if BinanceClient._orderbook_cache:
                     return BinanceClient._orderbook_cache
         
+        # Check if in fallback mode
+        if self._fallback_mode and time.time() < self._fallback_until:
+            client = await self._get_client()
+            price, provider = await fallback_chain.get_btc_price(client)
+            if price:
+                return {
+                    "best_bid": price * 0.9998,
+                    "best_ask": price * 1.0002,
+                    "spread": price * 0.0004,
+                    "spread_bps": 4.0,
+                    "mid_price": price,
+                    "fallback": True,
+                    "provider": provider,
+                }
+        
         endpoint = "/api/v3/depth"
         params = {
             "symbol": BINANCE_SYMBOL,
@@ -274,6 +314,21 @@ class BinanceClient:
         data, _ = await self._make_request(endpoint, params)
         
         if data is None:
+            # Try fallback for price approximation
+            client = await self._get_client()
+            price, provider = await fallback_chain.get_btc_price(client)
+            if price:
+                logger.warning(f"Using fallback orderbook approximation from {provider}")
+                return {
+                    "best_bid": price * 0.9998,
+                    "best_ask": price * 1.0002,
+                    "spread": price * 0.0004,
+                    "spread_bps": 4.0,
+                    "mid_price": price,
+                    "fallback": True,
+                    "provider": provider,
+                }
+            
             async with BinanceClient._orderbook_lock:
                 return BinanceClient._orderbook_cache or {
                     "best_bid": 0, "best_ask": 0, "spread": 0, 
