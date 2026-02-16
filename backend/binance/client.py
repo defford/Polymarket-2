@@ -3,8 +3,10 @@ Binance integration for BTC price candle data.
 Fetches historical and live candles across multiple timeframes.
 
 Uses Binance public REST API (no API key needed for market data).
+ASYNC version with parallel candle fetching for optimal performance.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -20,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
-# Timeframe config: (binance_interval, candles_needed_for_emas)
 TIMEFRAMES = {
     "1m": ("1m", 250),
     "5m": ("5m", 250),
@@ -35,13 +36,18 @@ class BinanceClient:
     """
     Fetches BTC/USDT candle data from Binance.
     Maintains a cache of candles per timeframe for TA calculations.
+    
+    Async implementation with:
+    - Lazy AsyncClient initialization
+    - Parallel candle fetching across timeframes
+    - Thread-safe caching with asyncio.Lock
     """
 
     def __init__(self):
-        self._http = httpx.Client(timeout=15.0)
+        self._http: Optional[httpx.AsyncClient] = None
         self._candle_cache: dict[str, pd.DataFrame] = {}
         self._last_fetch: dict[str, float] = {}
-        # Minimum seconds between fetches per timeframe to avoid hammering
+        self._lock = asyncio.Lock()
         self._fetch_intervals = {
             "1m": 10,
             "5m": 30,
@@ -51,27 +57,42 @@ class BinanceClient:
             "1d": 600,
         }
 
-    def fetch_candles(self, timeframe: str, limit: int = 250) -> Optional[pd.DataFrame]:
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Lazy initialization of async HTTP client."""
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=15.0)
+        return self._http
+
+    async def close(self):
+        """Close the HTTP client connection."""
+        if self._http:
+            await self._http.aclose()
+            self._http = None
+
+    async def fetch_candles(self, timeframe: str, limit: int = 250) -> Optional[pd.DataFrame]:
         """
         Fetch candles for a given timeframe.
         Returns DataFrame with columns: timestamp, open, high, low, close, volume
+        
+        Uses caching with rate limiting to avoid hammering the API.
         """
         if timeframe not in TIMEFRAMES:
             logger.error(f"Unknown timeframe: {timeframe}")
             return None
 
-        # Rate limiting — don't fetch too frequently
         now = time.time()
         last = self._last_fetch.get(timeframe, 0)
         min_interval = self._fetch_intervals.get(timeframe, 10)
 
-        if now - last < min_interval and timeframe in self._candle_cache:
-            return self._candle_cache[timeframe]
+        async with self._lock:
+            if now - last < min_interval and timeframe in self._candle_cache:
+                return self._candle_cache[timeframe]
 
         binance_interval = TIMEFRAMES[timeframe][0]
 
         try:
-            resp = self._http.get(
+            client = await self._get_client()
+            resp = await client.get(
                 f"{BINANCE_BASE_URL}/api/v3/klines",
                 params={
                     "symbol": BINANCE_SYMBOL,
@@ -95,8 +116,9 @@ class BinanceClient:
             df = df[["timestamp", "open", "high", "low", "close", "volume"]]
             df = df.sort_values("timestamp").reset_index(drop=True)
 
-            self._candle_cache[timeframe] = df
-            self._last_fetch[timeframe] = now
+            async with self._lock:
+                self._candle_cache[timeframe] = df
+                self._last_fetch[timeframe] = now
 
             logger.debug(
                 f"Fetched {len(df)} candles for {BINANCE_SYMBOL} {timeframe} "
@@ -106,29 +128,40 @@ class BinanceClient:
 
         except httpx.HTTPError as e:
             logger.error(f"Binance HTTP error fetching {timeframe} candles: {e}")
-            return self._candle_cache.get(timeframe)
+            async with self._lock:
+                return self._candle_cache.get(timeframe)
         except Exception as e:
             logger.error(f"Error fetching {timeframe} candles: {e}")
-            return self._candle_cache.get(timeframe)
+            async with self._lock:
+                return self._candle_cache.get(timeframe)
 
-    def fetch_all_timeframes(self) -> dict[str, pd.DataFrame]:
-        """Fetch candles for all configured timeframes."""
+    async def fetch_all_timeframes(self) -> dict[str, pd.DataFrame]:
+        """
+        Fetch candles for all configured timeframes in PARALLEL.
+        
+        This is the key optimization - instead of sequential fetching
+        which takes 6 * ~200ms = ~1200ms, we fetch all 6 in parallel
+        taking only ~200-300ms total.
+        """
+        tasks = [self.fetch_candles(tf) for tf in TIMEFRAMES]
+        results = await asyncio.gather(*tasks)
+        
         result = {}
-        for tf in TIMEFRAMES:
-            df = self.fetch_candles(tf)
+        for tf, df in zip(TIMEFRAMES.keys(), results):
             if df is not None and not df.empty:
                 result[tf] = df
         return result
 
-    def get_current_price(self) -> Optional[float]:
+    async def get_current_price(self) -> Optional[float]:
         """Get the latest BTC price from the most recent 1m candle."""
-        df = self._candle_cache.get("1m")
+        async with self._lock:
+            df = self._candle_cache.get("1m")
         if df is not None and not df.empty:
             return float(df.iloc[-1]["close"])
 
-        # Fallback: fetch ticker
         try:
-            resp = self._http.get(
+            client = await self._get_client()
+            resp = await client.get(
                 f"{BINANCE_BASE_URL}/api/v3/ticker/price",
                 params={"symbol": BINANCE_SYMBOL},
             )
@@ -138,7 +171,7 @@ class BinanceClient:
             logger.error(f"Error fetching current price: {e}")
             return None
 
-    def get_orderbook(self, limit: int = 5) -> dict:
+    async def get_orderbook(self, limit: int = 5) -> dict:
         """
         Get BTC orderbook for spread calculation.
         
@@ -150,7 +183,8 @@ class BinanceClient:
             - mid_price: float
         """
         try:
-            resp = self._http.get(
+            client = await self._get_client()
+            resp = await client.get(
                 f"{BINANCE_BASE_URL}/api/v3/depth",
                 params={
                     "symbol": BINANCE_SYMBOL,
@@ -184,9 +218,8 @@ class BinanceClient:
             return {"best_bid": 0, "best_ask": 0, "spread": 0, "spread_bps": 0, "mid_price": 0}
 
     def get_cached_candles(self, timeframe: str) -> Optional[pd.DataFrame]:
-        """Get cached candles without fetching."""
+        """Get cached candles without fetching (sync accessor for backward compat)."""
         return self._candle_cache.get(timeframe)
 
 
-# Global singleton
 binance_client = BinanceClient()

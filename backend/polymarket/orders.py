@@ -75,9 +75,9 @@ class OrderManager:
         # Determine which token to buy
         token_id = market.up_token_id if side == Side.UP else market.down_token_id
 
-        # Get current price
+        # Get current price (async)
         try:
-            best_price = self._pm_client.get_price(token_id, side="BUY")
+            best_price = await self._pm_client.get_price(token_id, side="BUY")
         except Exception:
             best_price = 0.5
 
@@ -235,13 +235,13 @@ class OrderManager:
         # --- Live order placement ---
         try:
             if order_type == "market":
-                resp = self._pm_client.place_market_order(
+                resp = await self._pm_client.place_market_order(
                     token_id=token_id,
                     amount=size_usd,
                     side="BUY",
                 )
             else:
-                resp = self._pm_client.place_limit_order(
+                resp = await self._pm_client.place_limit_order(
                     token_id=token_id,
                     price=price,
                     size=size_tokens,
@@ -264,7 +264,7 @@ class OrderManager:
                     for i in range(max_retries):
                         fill_retries = i + 1
                         await asyncio.sleep(1.0)
-                        order_check = self._pm_client.get_order(trade.order_id)
+                        order_check = await self._pm_client.get_order(trade.order_id)
                         order_status = order_check.get("status") if order_check else "UNKNOWN"
 
                         if order_status == "FILLED" or order_status == "MATCHED":
@@ -300,7 +300,7 @@ class OrderManager:
                         logger.info(f"⏳ Order {trade.order_id} still OPEN after {max_retries}s. Cancelling...")
 
                         # Attempt to cancel
-                        cancel_resp = self._pm_client.cancel_order(trade.order_id)
+                        cancel_resp = await self._pm_client.cancel_order(trade.order_id)
 
                         if cancel_resp and cancel_resp.get("success"):
                             trade.status = OrderStatus.CANCELLED
@@ -312,7 +312,7 @@ class OrderManager:
                             # Cancellation failed — check if it filled in the meantime
                             logger.warning(f"⚠️ Cancel failed for {trade.order_id} (msg={cancel_resp}). Checking if it filled...")
                             await asyncio.sleep(0.5)
-                            final_check = self._pm_client.get_order(trade.order_id)
+                            final_check = await self._pm_client.get_order(trade.order_id)
                             final_status = final_check.get("status") if final_check else "UNKNOWN"
 
                             if final_status == "FILLED" or final_status == "MATCHED":
@@ -571,7 +571,7 @@ class OrderManager:
 
         # Get current sell price
         try:
-            sell_price = self._pm_client.get_price(position.token_id, side="SELL")
+            sell_price = await self._pm_client.get_price(position.token_id, side="SELL")
         except Exception:
             sell_price = position.current_price
 
@@ -602,7 +602,7 @@ class OrderManager:
         else:
             # Live sell
             try:
-                resp = self._pm_client.place_market_order(
+                resp = await self._pm_client.place_market_order(
                     token_id=position.token_id,
                     amount=position.size,
                     side="SELL",
@@ -617,7 +617,7 @@ class OrderManager:
                 # UPDATE WITH ACTUAL FILL PRICE
                 try:
                     await asyncio.sleep(1.0)  # Wait for fill
-                    order_details = self._pm_client.get_order(order_id)
+                    order_details = await self._pm_client.get_order(order_id)
                     actual_price = None
                     
                     # Try to find average fill price in order details
@@ -787,14 +787,14 @@ class OrderManager:
         del self._open_positions[condition_id]
         return pnl
 
-    def update_position_prices(self, condition_id: str):
+    async def update_position_prices(self, condition_id: str):
         """Update current price and peak price for an open position."""
         position = self._open_positions.get(condition_id)
         if not position:
             return
 
         try:
-            current_price = self._pm_client.get_midpoint(position.token_id)
+            current_price = await self._pm_client.get_midpoint(position.token_id)
             position.current_price = current_price
             position.unrealized_pnl = (current_price - position.entry_price) * position.size
 
@@ -804,11 +804,11 @@ class OrderManager:
         except Exception as e:
             logger.debug(f"Could not update position price: {e}")
 
-    def cancel_all(self):
+    async def cancel_all(self):
         """Cancel all open orders (live mode only)."""
         if self._pm_client.is_authenticated:
             try:
-                self._pm_client.cancel_all_orders()
+                await self._pm_client.cancel_all_orders()
                 logger.info("All open orders cancelled")
             except Exception as e:
                 logger.error(f"Error cancelling orders: {e}")

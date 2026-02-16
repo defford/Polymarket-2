@@ -4,27 +4,10 @@ Exit Strategy Evaluator.
 Evaluates open positions against stop-loss conditions each tick and returns
 exit decisions. Does NOT execute sells — the engine handles that.
 
-Checks:
-1. Signal Decay E-Stop — emergency exit when BTC conviction collapses
-2. Survival Buffer — 15 BPS hard stop for first 180s, no trailing
-3. Divergence Monitor — detect token noise vs legitimate BTC signal
-4. Liquidity Guard — prevent stop-hunts during illiquid conditions
-5. Trailing stop — sell if price drops X% from peak (only after buffer, if profitable)
-6. Time-decay tightening — tighter stops as window closes
-7. BTC pressure scaling — short-term TA widens/tightens stops dynamically
-8. Signal reversal — exit if signals flip hard against position
-9. Hard floor — absolute max loss per trade
-10. Conviction scaling — adjust TP/trail based on entry conviction
-11. Delta Scaling — ATR-based TP adjustment
-
-The key insight: the TOKEN price lags BTC reality. If 1m/5m/15m EMAs
-are moving hard against your position, the token hasn't caught up yet.
-Tighten the stop BEFORE the token dumps. Conversely, if short-term BTC
-is ripping in your favor, give the position room to breathe.
-
-Called from the trading engine's main loop.
+ASYNC version - calls async Binance client methods.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -43,20 +26,6 @@ def _compute_pressure_multiplier(
     pressure: dict,
     config_mgr=None,
 ) -> float:
-    """
-    Convert BTC short-term pressure into a stop-loss multiplier.
-
-    Args:
-        position_side: Which side we're holding (UP or DOWN)
-        pressure: Output from compute_short_term_pressure()
-        config_mgr: Optional config manager (default: global)
-
-    Returns:
-        Multiplier for the trailing stop percentage:
-        - > 1.0: BTC supports our position -> widen stop (more room)
-        - 1.0: neutral
-        - < 1.0: BTC is against us -> tighten stop (less tolerance)
-    """
     _cfg = config_mgr if config_mgr is not None else config_manager
     exit_config = _cfg.config.exit
     raw_pressure = pressure.get("pressure", 0.0)
@@ -64,26 +33,19 @@ def _compute_pressure_multiplier(
     if not exit_config.pressure_scaling_enabled:
         return 1.0
 
-    # Determine if pressure is WITH or AGAINST our position
-    # Holding UP: positive pressure = with us, negative = against
-    # Holding DOWN: negative pressure = with us, positive = against
     if position_side == Side.UP:
-        aligned_pressure = raw_pressure   # positive = good for UP
+        aligned_pressure = raw_pressure
     else:
-        aligned_pressure = -raw_pressure  # negative BTC pressure = good for DOWN
+        aligned_pressure = -raw_pressure
 
-    # Dead zone -- small pressure means no adjustment
     if abs(aligned_pressure) < exit_config.pressure_neutral_zone:
         return 1.0
 
-    # Scale linearly from neutral zone to extremes
     if aligned_pressure > 0:
-        # BTC supports our position -> widen the stop
         t = (aligned_pressure - exit_config.pressure_neutral_zone) / (1.0 - exit_config.pressure_neutral_zone)
         t = min(t, 1.0)
         multiplier = 1.0 + t * (exit_config.pressure_widen_max - 1.0)
     else:
-        # BTC is against our position -> tighten the stop
         t = (abs(aligned_pressure) - exit_config.pressure_neutral_zone) / (1.0 - exit_config.pressure_neutral_zone)
         t = min(t, 1.0)
         multiplier = 1.0 - t * (1.0 - exit_config.pressure_tighten_min)
@@ -91,7 +53,7 @@ def _compute_pressure_multiplier(
     return round(multiplier, 3)
 
 
-def evaluate_exit(
+async def evaluate_exit(
     position: Position,
     signal: CompositeSignal,
     config_mgr=None,
@@ -106,29 +68,8 @@ def evaluate_exit(
 
     Returns a decision dict if exit is warranted, None otherwise.
     The engine is responsible for executing the sell.
-
-    Args:
-        position: The open position to evaluate
-        signal: Latest composite signal
-        config_mgr: Optional config manager (default: global)
-        mkt_discovery: Optional market discovery (default: global)
-        btc_client: Optional binance client (default: global)
-        current_btc_price: Current BTC price (for divergence check)
-        current_btc_spread_bps: Current BTC spread (for liquidity guard)
-        current_token_spread_bps: Current token spread (for liquidity guard)
-
-    Returns:
-        Decision dict with keys:
-            reason: Full human-readable reason string
-            reason_category: "trailing_stop" | "hard_take_profit" | "hard_stop" | "signal_reversal" | "signal_decay_estop"
-            effective_trailing_pct: The final trailing stop % used
-            pressure_multiplier: BTC pressure multiplier applied
-            time_zone: "normal" | "TIGHT" | "FINAL" | "SURVIVAL"
-            btc_pressure: Raw BTC pressure value
-            conviction_tier: "high" | "normal" | "low"
-            divergence_blocked: bool (if stop was blocked by divergence)
-            liquidity_guard_active: bool (if liquidity guard blocked exit)
-        Or None if no exit warranted.
+    
+    ASYNC version - fetches BTC candles asynchronously.
     """
     _cfg = config_mgr if config_mgr is not None else config_manager
     _discovery = mkt_discovery if mkt_discovery is not None else market_discovery
@@ -160,7 +101,7 @@ def evaluate_exit(
             f"signal_decay_estop: BTC L2 confidence={l2_confidence:.2f} < {exit_config.signal_decay_threshold:.2f} | "
             f"OVERRIDE survival buffer, immediate exit"
         )
-        logger.info(f"🚨 EMERGENCY EXIT -- {reason}")
+        logger.info(f"EMERGENCY EXIT -- {reason}")
         return {
             "reason": reason,
             "reason_category": "signal_decay_estop",
@@ -184,7 +125,7 @@ def evaluate_exit(
     is_profitable = position.current_price > position.entry_price
 
     try:
-        candles = _btc.fetch_all_timeframes()
+        candles = await _btc.fetch_all_timeframes()
         signal_config = _cfg.config.signal
         pressure = compute_short_term_pressure(candles, signal_config)
     except Exception as e:
@@ -230,7 +171,6 @@ def evaluate_exit(
         effective_trailing = max(effective_trailing, exit_config.scaling_tp_min_trail)
 
     pressure_val = pressure.get("pressure", 0.0)
-    momentum_val = pressure.get("momentum", 0.0)
 
     divergence_blocked = False
     if exit_config.divergence_monitor_enabled and in_survival_buffer:
@@ -243,7 +183,7 @@ def evaluate_exit(
             if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
                 divergence_blocked = True
                 logger.info(
-                    f"🔇 DIVERGENCE: Token dropped {token_drop_bps:.1f} BPS but BTC only moved {btc_move_bps:.1f} BPS | "
+                    f"DIVERGENCE: Token dropped {token_drop_bps:.1f} BPS but BTC only moved {btc_move_bps:.1f} BPS | "
                     f"Blocking stop during survival buffer"
                 )
 
@@ -254,7 +194,7 @@ def evaluate_exit(
             if btc_spread_change < exit_config.btc_spread_stable_bps:
                 liquidity_guard_active = True
                 logger.info(
-                    f"🛡️ LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS > {exit_config.token_wide_spread_bps:.0f} | "
+                    f"LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS > {exit_config.token_wide_spread_bps:.0f} | "
                     f"BTC spread stable ({btc_spread_change:.0f} BPS change) | Blocking stop-hunt"
                 )
 
@@ -264,7 +204,7 @@ def evaluate_exit(
         if drop_from_peak > 0.03 or abs(pressure_val) > 0.2 or in_survival_buffer:
             time_str = f"{time_remaining:.0f}s" if time_remaining is not None else "?"
             logger.info(
-                f"📉 EXIT CHECK: {position.side.value.upper()} | "
+                f"EXIT CHECK: {position.side.value.upper()} | "
                 f"entry={position.entry_price:.3f} peak={position.peak_price:.3f} "
                 f"now={position.current_price:.3f} (drop={drop_from_peak:.1%}) | "
                 f"conviction={conviction:.2f} ({conviction_tier}) L2={l2_confidence:.2f} | "
@@ -296,12 +236,12 @@ def evaluate_exit(
                     f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
                     f"(survival buffer: {survival_hard_stop:.2%} for {held_seconds:.0f}s)"
                 )
-                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                logger.info(f"EXIT TRIGGERED -- {reason}")
                 return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
         return None
 
     if liquidity_guard_active:
-        logger.info(f"🛡️ LIQUIDITY GUARD active - blocking trailing/hard stop")
+        logger.info(f"LIQUIDITY GUARD active - blocking trailing/hard stop")
         return None
 
     if not is_profitable:
@@ -314,7 +254,7 @@ def evaluate_exit(
                     f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
                     f"(hard limit: {exit_config.hard_stop_pct:.0%})"
                 )
-                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                logger.info(f"EXIT TRIGGERED -- {reason}")
                 return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
 
         if signal and signal.recommended_side is not None:
@@ -330,7 +270,7 @@ def evaluate_exit(
                     f"signal_reversal: holding {position.side.value.upper()} but "
                     f"signal={signal.composite_score:+.3f} (underwater, no trailing)"
                 )
-                logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+                logger.info(f"EXIT TRIGGERED -- {reason}")
                 return {**base_decision, "reason": reason, "reason_category": "signal_reversal"}
 
         return None
@@ -343,7 +283,7 @@ def evaluate_exit(
                 f"low_conviction_take_profit: conviction={conviction:.2f} < {exit_config.low_conviction_threshold:.2f} | "
                 f"securing win at {position.current_price:.3f}"
             )
-            logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
+            logger.info(f"EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "hard_take_profit"}
 
     if position.peak_price > 0 and position.current_price > 0:
@@ -356,7 +296,7 @@ def evaluate_exit(
                 f"effective={effective_trailing:.1%} [{time_zone_label}] | "
                 f"conviction={conviction_tier}"
             )
-            logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+            logger.info(f"EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "trailing_stop"}
 
     if exit_config.hard_tp_enabled and position.entry_price > 0 and position.current_price > 0:
@@ -368,7 +308,7 @@ def evaluate_exit(
                 f"(TP limit: {effective_tp:.0%}, conviction={conviction_tier}) | "
                 f"BTC pressure={pressure_val:+.2f}"
             )
-            logger.info(f"🎯 EXIT TRIGGERED -- {reason}")
+            logger.info(f"EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "hard_take_profit"}
 
     if position.current_price > 0 and position.entry_price > 0:
@@ -380,7 +320,7 @@ def evaluate_exit(
                 f"{drop_from_entry:.1%} from entry {position.entry_price:.3f} "
                 f"(hard limit: {exit_config.hard_stop_pct:.0%})"
             )
-            logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+            logger.info(f"EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
 
     if signal and signal.recommended_side is not None:
@@ -398,7 +338,7 @@ def evaluate_exit(
                 f"BTC pressure={pressure_val:+.2f} "
                 f"(reversal threshold: +/-{exit_config.signal_reversal_threshold})"
             )
-            logger.info(f"🛑 EXIT TRIGGERED -- {reason}")
+            logger.info(f"EXIT TRIGGERED -- {reason}")
             return {**base_decision, "reason": reason, "reason_category": "signal_reversal"}
 
     return None

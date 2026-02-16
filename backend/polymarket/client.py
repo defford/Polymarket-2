@@ -1,9 +1,15 @@
 """
 Polymarket CLOB client wrapper.
 Handles initialization, authentication, and common operations.
+
+ASYNC version with:
+- asyncio.to_thread() wrappers for py-clob-client calls
+- Price history caching with TTL
 """
 
+import asyncio
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -23,17 +29,26 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+PRICE_HISTORY_CACHE_TTL = 5.0
+ORDERBOOK_CACHE_TTL = 2.0
+
 
 class PolymarketClient:
     """
     Wrapper around py-clob-client for Polymarket CLOB API.
     Supports both read-only and authenticated modes.
+    
+    All CLOB operations are wrapped in asyncio.to_thread() to avoid
+    blocking the async event loop since py-clob-client is synchronous.
     """
 
     def __init__(self):
         self._client: Optional[ClobClient] = None
         self._authenticated = False
-        self._http = httpx.Client(timeout=15.0)
+        self._http: Optional[httpx.AsyncClient] = None
+        self._price_history_cache: dict[str, tuple[list, float]] = {}
+        self._orderbook_cache: dict[str, tuple[dict, float]] = {}
+        self._midpoint_cache: dict[str, tuple[float, float]] = {}
 
     def init_read_only(self):
         """Initialize a read-only client (no auth needed)."""
@@ -54,41 +69,32 @@ class PolymarketClient:
             host=POLYMARKET_CLOB_HOST,
             key=POLYMARKET_PRIVATE_KEY,
             chain_id=CHAIN_ID,
-            signature_type=1,  # Magic/email wallet
+            signature_type=1,
             funder=POLYMARKET_PROXY_ADDRESS if POLYMARKET_PROXY_ADDRESS else None,
         )
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
 
-        # Set USDC allowance for the CTF Exchange contract
-        # We perform a check-and-set loop to ensure it's actually applied.
         try:
-            # 1. Check current allowance
             ba = self._client.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             )
-            # USDC has 6 decimals
             raw_allowance = float(ba.get("allowance", 0))
             current_allowance = raw_allowance / 1_000_000
             
             logger.info(f"Initial Allowance Check: {raw_allowance} (approx ${current_allowance:,.2f})")
 
-            # 2. If allowance is insufficient, try to update it
-            # We want allowance > $1B usually (max approval)
             if current_allowance < 1_000:  
                 logger.info("Allowance is low (< $1000). Attempting to set max allowance...")
                 try:
-                    # Approve COLLATERAL (USDC)
                     logger.info("Approving COLLATERAL (USDC)...")
                     resp = self._client.update_balance_allowance(
                         BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                     )
                     logger.info(f"USDC Approval TX: {resp}")
                     
-                    # 3. Wait/Poll for it to apply (up to 10s)
-                    import time
+                    import time as time_module
                     for i in range(5):
-                        time.sleep(2.0)
-                        # Check USDC again
+                        time_module.sleep(2.0)
                         ba_check = self._client.get_balance_allowance(
                             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                         )
@@ -96,20 +102,19 @@ class PolymarketClient:
                         new_human = new_raw / 1_000_000
                         logger.info(f"Allowance poll #{i+1}: ${new_human:,.2f}")
                         if new_human > 1_000:
-                            logger.info("✅ Allowance updated successfully!")
+                            logger.info("Allowance updated successfully!")
                             break
                     else:
-                        logger.warning("⚠️ Allowance did not update within 10s. Transaction might be pending or failed.")
+                        logger.warning("Allowance did not update within 10s. Transaction might be pending or failed.")
                         
                 except Exception as e:
-                    logger.error(f"❌ Failed to send allowance update transaction: {e}")
+                    logger.error(f"Failed to send allowance update transaction: {e}")
             else:
-                logger.info("✅ Allowance is already sufficient.")
+                logger.info("Allowance is already sufficient.")
 
         except Exception as e:
             logger.warning(f"Failed to check/update allowance: {e}")
 
-        # Verify actual balance and allowance
         try:
             ba = self._client.get_balance_allowance(
                 BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -117,25 +122,36 @@ class PolymarketClient:
             raw_bal = float(ba.get("balance", 0))
             raw_allow = float(ba.get("allowance", 0))
             
-            # Convert atomic units to USDC (6 decimals)
             bal_usdc = raw_bal / 1_000_000
             allow_usdc = raw_allow / 1_000_000
             
             target_address = POLYMARKET_PROXY_ADDRESS if POLYMARKET_PROXY_ADDRESS else "Signer (EOA)"
-            logger.info(f"💰 Account State [{target_address}] -- Balance: ${bal_usdc:,.2f} | Allowance: ${allow_usdc:,.2f}")
+            logger.info(f"Account State [{target_address}] -- Balance: ${bal_usdc:,.2f} | Allowance: ${allow_usdc:,.2f}")
 
             if bal_usdc < 5.0:
-                logger.warning(f"⚠️ Low balance on {target_address}! You have ${bal_usdc:.2f}, but need at least $5.00 for a trade.")
+                logger.warning(f"Low balance on {target_address}! You have ${bal_usdc:.2f}, but need at least $5.00 for a trade.")
                 logger.warning("If you deposited funds, make sure they are in the PROXY address (if configured), not the Signer.")
             
             if allow_usdc < 5.0:
-                logger.warning(f"⚠️ Low allowance (${allow_usdc:.2f})! Orders will likely fail.")
+                logger.warning(f"Low allowance (${allow_usdc:.2f})! Orders will likely fail.")
                 
         except Exception as e:
             logger.error(f"Could not verify balance/allowance: {e}")
 
         self._authenticated = True
         logger.info("Polymarket client initialized (authenticated)")
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """Lazy initialization of async HTTP client."""
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=15.0)
+        return self._http
+
+    async def close(self):
+        """Close the HTTP client connection."""
+        if self._http:
+            await self._http.aclose()
+            self._http = None
 
     @property
     def client(self) -> ClobClient:
@@ -147,49 +163,67 @@ class PolymarketClient:
     def is_authenticated(self) -> bool:
         return self._authenticated
 
-    # --- Read Operations (no auth) ---
+    def _require_auth(self):
+        if not self._authenticated:
+            raise RuntimeError(
+                "Authenticated client required for this operation. "
+                "Call init_authenticated() first."
+            )
 
-    def get_midpoint(self, token_id: str) -> float:
-        """Get midpoint price for a token."""
+    # --- Read Operations (async wrappers) ---
+
+    async def get_midpoint(self, token_id: str) -> float:
+        """Get midpoint price for a token (async, cached)."""
+        now = time.time()
+        cached = self._midpoint_cache.get(token_id)
+        if cached and (now - cached[1]) < ORDERBOOK_CACHE_TTL:
+            return cached[0]
+        
         try:
-            result = self.client.get_midpoint(token_id)
-            return float(result.get("mid", 0.5))
+            result = await asyncio.to_thread(self.client.get_midpoint, token_id)
+            midpoint = float(result.get("mid", 0.5))
+            self._midpoint_cache[token_id] = (midpoint, now)
+            return midpoint
         except Exception as e:
             logger.error(f"Error getting midpoint for {token_id}: {e}")
-            return 0.5
+            return cached[0] if cached else 0.5
 
-    def get_price(self, token_id: str, side: str = "BUY") -> float:
-        """Get best price for a token on a given side."""
+    async def get_price(self, token_id: str, side: str = "BUY") -> float:
+        """Get best price for a token on a given side (async)."""
         try:
-            result = self.client.get_price(token_id, side=side)
+            result = await asyncio.to_thread(self.client.get_price, token_id, side=side)
             return float(result.get("price", 0.5))
         except Exception as e:
             logger.error(f"Error getting price for {token_id}: {e}")
             return 0.5
 
-    def get_order_book(self, token_id: str) -> dict:
-        """Get full order book for a token."""
+    async def get_order_book(self, token_id: str) -> dict:
+        """Get full order book for a token (async, cached briefly)."""
+        now = time.time()
+        cached = self._orderbook_cache.get(token_id)
+        if cached and (now - cached[1]) < ORDERBOOK_CACHE_TTL:
+            return cached[0]
+        
         try:
-            return self.client.get_order_book(token_id)
+            result = await asyncio.to_thread(self.client.get_order_book, token_id)
+            self._orderbook_cache[token_id] = (result, now)
+            return result
         except Exception as e:
             logger.error(f"Error getting order book for {token_id}: {e}")
-            return {"bids": [], "asks": []}
+            return cached[0] if cached else {"bids": [], "asks": []}
 
-    def get_order_books(self, token_ids: list[str]) -> list[dict]:
-        """Get order books for multiple tokens."""
+    async def get_order_books(self, token_ids: list[str]) -> list[dict]:
+        """Get order books for multiple tokens (async, parallel)."""
         try:
             params = [BookParams(token_id=tid) for tid in token_ids]
-            return self.client.get_order_books(params)
+            return await asyncio.to_thread(self.client.get_order_books, params)
         except Exception as e:
             logger.error(f"Error getting order books: {e}")
             return []
 
-    def get_price_history(self, token_id: str, interval: str = "max", fidelity: int = 60) -> list:
+    async def get_price_history(self, token_id: str, interval: str = "max", fidelity: int = 60) -> list:
         """
-        Get historical price data for a token via direct HTTP call.
-        
-        The py-clob-client library doesn't have a get_prices_history method,
-        so we call the CLOB prices-history endpoint directly.
+        Get historical price data for a token via direct HTTP call (async, cached).
         
         Args:
             token_id: The token to fetch price history for
@@ -197,10 +231,18 @@ class PolymarketClient:
             fidelity: Seconds between data points (default: 60 for ~1 minute resolution)
             
         Returns:
-            List of price history data points [{t: timestamp, p: price}, ...], or empty list on error
+            List of price history data points [{t: timestamp, p: price}, ...]
         """
+        cache_key = f"{token_id}:{interval}:{fidelity}"
+        now = time.time()
+        
+        cached = self._price_history_cache.get(cache_key)
+        if cached and (now - cached[1]) < PRICE_HISTORY_CACHE_TTL:
+            return cached[0]
+        
         try:
-            resp = self._http.get(
+            http_client = await self._get_http_client()
+            resp = await http_client.get(
                 f"{POLYMARKET_CLOB_HOST}/prices-history",
                 params={
                     "market": token_id,
@@ -210,33 +252,35 @@ class PolymarketClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("history", []) if isinstance(data, dict) else data
+            history = data.get("history", []) if isinstance(data, dict) else data
+            self._price_history_cache[cache_key] = (history, now)
+            return history
         except httpx.HTTPStatusError as e:
             logger.warning(f"Price history not available for token {token_id[:16]}...: HTTP {e.response.status_code}")
-            return []
+            return cached[0] if cached else []
         except Exception as e:
             logger.error(f"Error getting price history for {token_id}: {e}")
-            return []
+            return cached[0] if cached else []
 
-    def get_markets(self) -> list:
-        """Get all available markets from the CLOB."""
+    async def get_markets(self) -> list:
+        """Get all available markets from the CLOB (async)."""
         try:
-            return self.client.get_markets()
+            return await asyncio.to_thread(self.client.get_markets)
         except Exception as e:
             logger.error(f"Error getting markets: {e}")
             return []
 
-    def get_market(self, condition_id: str) -> dict:
-        """Get a specific market by condition ID."""
+    async def get_market(self, condition_id: str) -> dict:
+        """Get a specific market by condition ID (async)."""
         try:
-            return self.client.get_market(condition_id)
+            return await asyncio.to_thread(self.client.get_market, condition_id)
         except Exception as e:
             logger.error(f"Error getting market {condition_id}: {e}")
             return {}
 
-    # --- Write Operations (auth required) ---
+    # --- Write Operations (auth required, async) ---
 
-    def place_limit_order(
+    async def place_limit_order(
         self,
         token_id: str,
         price: float,
@@ -244,11 +288,7 @@ class PolymarketClient:
         side: str = "BUY",
         post_only: bool = True,
     ) -> dict:
-        """
-        Place a limit order.
-        side: "BUY" or "SELL"
-        post_only: if True, order won't match existing liquidity (maker only)
-        """
+        """Place a limit order (async)."""
         self._require_auth()
 
         order_args = OrderArgs(
@@ -259,41 +299,38 @@ class PolymarketClient:
         )
 
         try:
-            signed_order = self.client.create_order(order_args)
-            resp = self.client.post_order(signed_order, OrderType.GTC)
+            signed_order = await asyncio.to_thread(self.client.create_order, order_args)
+            resp = await asyncio.to_thread(self.client.post_order, signed_order, OrderType.GTC)
             logger.info(
                 f"Limit order placed: {side} {size} @ {price} "
-                f"(token={token_id[:16]}..., postOnly={post_only}) → {resp}"
+                f"(token={token_id[:16]}..., postOnly={post_only}) -> {resp}"
             )
             return resp
         except Exception as e:
             logger.error(f"Error placing limit order: {e}")
             
-            # Diagnostic: Check balance/allowance on failure
             try:
-                ba = self._client.get_balance_allowance(
+                ba = await asyncio.to_thread(
+                    self._client.get_balance_allowance,
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
                 raw_bal = float(ba.get("balance", 0))
                 raw_allow = float(ba.get("allowance", 0))
                 bal_usdc = raw_bal / 1_000_000
                 allow_usdc = raw_allow / 1_000_000
-                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
+                logger.warning(f"Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
             except:
                 pass
 
             return {"success": False, "errorMsg": str(e)}
 
-    def place_market_order(
+    async def place_market_order(
         self,
         token_id: str,
         amount: float,
         side: str = "BUY",
     ) -> dict:
-        """
-        Place a FOK market order.
-        amount: in dollars for BUY, in shares for SELL
-        """
+        """Place a FOK market order (async)."""
         self._require_auth()
 
         mo = MarketOrderArgs(
@@ -303,84 +340,82 @@ class PolymarketClient:
         )
 
         try:
-            signed_order = self.client.create_market_order(mo)
-            resp = self.client.post_order(signed_order, OrderType.FOK)
+            signed_order = await asyncio.to_thread(self.client.create_market_order, mo)
+            resp = await asyncio.to_thread(self.client.post_order, signed_order, OrderType.FOK)
 
             logger.info(
                 f"Market order placed: {side} ${amount} "
-                f"(token={token_id[:16]}...) → {resp}"
+                f"(token={token_id[:16]}...) -> {resp}"
             )
             return resp
         except Exception as e:
             logger.error(f"Error placing market order: {e}")
             
-            # Diagnostic: Check balance/allowance on failure
             try:
-                ba = self._client.get_balance_allowance(
+                ba = await asyncio.to_thread(
+                    self._client.get_balance_allowance,
                     BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
                 )
                 raw_bal = float(ba.get("balance", 0))
                 raw_allow = float(ba.get("allowance", 0))
                 bal_usdc = raw_bal / 1_000_000
                 allow_usdc = raw_allow / 1_000_000
-                logger.warning(f"🔍 Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
+                logger.warning(f"Diagnostic [Failure]: Balance=${bal_usdc:,.2f} | Allowance=${allow_usdc:,.2f}")
             except:
                 pass
 
             return {"success": False, "errorMsg": str(e)}
 
-    def cancel_order(self, order_id: str) -> dict:
-        """Cancel an open order."""
+    async def cancel_order(self, order_id: str) -> dict:
+        """Cancel an open order (async)."""
         self._require_auth()
         try:
-            return self.client.cancel(order_id)
+            return await asyncio.to_thread(self.client.cancel, order_id)
         except Exception as e:
             logger.error(f"Error cancelling order {order_id}: {e}")
             return {"success": False, "errorMsg": str(e)}
 
-    def cancel_all_orders(self) -> dict:
-        """Cancel all open orders."""
+    async def cancel_all_orders(self) -> dict:
+        """Cancel all open orders (async)."""
         self._require_auth()
         try:
-            return self.client.cancel_all()
+            return await asyncio.to_thread(self.client.cancel_all)
         except Exception as e:
             logger.error(f"Error cancelling all orders: {e}")
             return {"success": False, "errorMsg": str(e)}
 
-    def get_open_orders(self) -> list:
-        """Get all open orders for the authenticated user."""
+    async def get_open_orders(self) -> list:
+        """Get all open orders for the authenticated user (async)."""
         self._require_auth()
         try:
-            return self.client.get_orders()
+            return await asyncio.to_thread(self.client.get_orders)
         except Exception as e:
             logger.error(f"Error getting open orders: {e}")
             return []
 
-    def get_trades(self) -> list:
-        """Get trade history for the authenticated user."""
+    async def get_trades(self) -> list:
+        """Get trade history for the authenticated user (async)."""
         self._require_auth()
         try:
-            return self.client.get_trades()
+            return await asyncio.to_thread(self.client.get_trades)
         except Exception as e:
             logger.error(f"Error getting trades: {e}")
             return []
 
-    def get_order(self, order_id: str) -> dict:
-        """Get details of a specific order."""
+    async def get_order(self, order_id: str) -> dict:
+        """Get details of a specific order (async)."""
         self._require_auth()
         try:
-            return self.client.get_order(order_id)
+            return await asyncio.to_thread(self.client.get_order, order_id)
         except Exception as e:
             logger.error(f"Error getting order {order_id}: {e}")
             return {}
 
-    def _require_auth(self):
-        if not self._authenticated:
-            raise RuntimeError(
-                "Authenticated client required for this operation. "
-                "Call init_authenticated() first."
-            )
+    def clear_cache(self):
+        """Clear all caches."""
+        self._price_history_cache.clear()
+        self._orderbook_cache.clear()
+        self._midpoint_cache.clear()
 
 
-# Global singleton
 polymarket_client = PolymarketClient()
