@@ -370,6 +370,13 @@ class TradingEngine:
                     if in_survival_buffer:
                         if position.current_price > 0 and position.entry_price > 0:
                             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
+                            
+                            if exit_config.atr_stop_enabled and signal and signal.atr_value:
+                                atr_stop_pct = (signal.atr_value * exit_config.atr_stop_multiplier) / position.entry_price
+                                atr_stop_pct = max(exit_config.atr_stop_min_pct, 
+                                                   min(exit_config.atr_stop_max_pct, atr_stop_pct))
+                                survival_hard_stop = atr_stop_pct
+                            
                             drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
                             if drop_from_entry >= survival_hard_stop:
                                 reason = (
@@ -397,6 +404,7 @@ class TradingEngine:
                                     )
 
                         liquidity_guard_active = False
+                        token_spread_bps = 0.0
                         try:
                             token_ob = await self._polymarket.get_order_book(position.token_id)
                             if token_ob:
@@ -422,6 +430,7 @@ class TradingEngine:
                         continue
 
                     liquidity_guard_active = False
+                    token_spread_bps = 0.0
                     try:
                         token_ob = await self._polymarket.get_order_book(position.token_id)
                         if token_ob:
@@ -432,13 +441,13 @@ class TradingEngine:
                                 best_ask = float(asks[0].get("price", 0))
                                 if best_bid > 0:
                                     token_spread_bps = (best_ask - best_bid) / best_bid * 10000
-                            if exit_config.liquidity_guard_enabled and token_spread_bps > exit_config.token_wide_spread_bps:
-                                btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
-                                if btc_spread_change < exit_config.btc_spread_stable_bps:
-                                    liquidity_guard_active = True
-                                    logger.info(
-                                        f"LIQUIDITY GUARD (fast): Token spread={token_spread_bps:.0f} BPS | Blocking stop-hunt"
-                                    )
+                                if exit_config.liquidity_guard_enabled and token_spread_bps > exit_config.token_wide_spread_bps:
+                                    btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+                                    if btc_spread_change < exit_config.btc_spread_stable_bps:
+                                        liquidity_guard_active = True
+                                        logger.info(
+                                            f"LIQUIDITY GUARD (fast): Token spread={token_spread_bps:.0f} BPS | Blocking stop-hunt"
+                                        )
                     except Exception:
                         pass
 
@@ -473,6 +482,15 @@ class TradingEngine:
 
                     if conviction_tier == "low":
                         base_trailing = min(base_trailing, exit_config.low_conviction_trail_pct)
+
+                    if exit_config.profit_scaled_trailing_enabled and position.entry_price > 0:
+                        gain_pct = (position.current_price - position.entry_price) / position.entry_price
+                        if gain_pct >= 0.50:
+                            base_trailing = exit_config.profit_trail_at_50pct
+                        elif gain_pct >= 0.30:
+                            base_trailing = exit_config.profit_trail_at_30pct
+                        elif gain_pct >= 0.15:
+                            base_trailing = exit_config.profit_trail_at_15pct
 
                     if exit_config.scaling_tp_enabled and position.entry_price > 0 and is_profitable:
                         gain_pct = (position.current_price - position.entry_price) / position.entry_price
@@ -904,6 +922,7 @@ class TradingEngine:
             return
 
         max_entry = config.risk.max_entry_price
+        min_entry = config.risk.min_entry_price
         current_price = 0.5
         if signal.recommended_side == Side.UP:
             current_price = market.up_price if market.up_price else 0.5
@@ -912,6 +931,10 @@ class TradingEngine:
 
         if current_price > max_entry:
             logger.info(f"Trade Skipped: Price {current_price:.2f} exceeds max entry {max_entry:.2f}")
+            return
+
+        if current_price < min_entry:
+            logger.info(f"Trade Skipped: Price {current_price:.2f} below min entry {min_entry:.2f}")
             return
 
         position_size = self._risk.get_position_size()

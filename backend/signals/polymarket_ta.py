@@ -86,15 +86,17 @@ def compute_layer1_signal(
     current_rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50.0
 
     rsi_signal = 0.0
+    rsi_valid = True
     if not np.isnan(current_rsi):
-        if current_rsi < 15:
-            # Extreme exhaustion → strong bullish for "Up" (avoid crowded trades)
+        if current_rsi < 5 or current_rsi > 95:
+            logger.debug(f"RSI out of valid range: {current_rsi:.1f}, treating as invalid")
+            rsi_valid = False
+            rsi_signal = 0.0
+        elif current_rsi < 15:
             rsi_signal = (15 - current_rsi) / 15
         elif current_rsi > config.pm_rsi_overbought:
-            # Overbought → price may drop → bearish for "Up" (bullish for "Down")
             rsi_signal = -(current_rsi - config.pm_rsi_overbought) / (100 - config.pm_rsi_overbought)
         else:
-            # Neutral zone - no RSI signal (avoid late entries on moderate oversold)
             rsi_signal = 0.0
 
     # --- MACD ---
@@ -145,6 +147,11 @@ def compute_layer1_signal(
         confidence = min(1.0, confidence * 1.3)  # Boost when all agree
     else:
         confidence *= 0.7  # Reduce when conflicting
+
+    # Penalize confidence if RSI was invalid (extreme values)
+    if not rsi_valid:
+        confidence *= 0.6
+        logger.debug(f"Layer 1 confidence reduced due to invalid RSI: {confidence:.2f}")
 
     return Layer1Signal(
         rsi=float(current_rsi) if not np.isnan(current_rsi) else None,

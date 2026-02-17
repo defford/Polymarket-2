@@ -819,10 +819,16 @@ def _parse_exit_reason(reason: str) -> str:
     reason_lower = reason.lower()
     if reason_lower.startswith("trailing_stop"):
         return "trailing_stop"
+    elif reason_lower.startswith("survival_hard_stop"):
+        return "survival_stop"
     elif reason_lower.startswith("hard_stop"):
         return "hard_stop"
+    elif reason_lower.startswith("signal_decay_estop"):
+        return "signal_decay"
     elif reason_lower.startswith("signal_reversal"):
         return "signal_reversal"
+    elif reason_lower.startswith("hard_take_profit"):
+        return "take_profit"
     elif reason_lower.startswith("market_close"):
         return "market_close"
     return "unknown"

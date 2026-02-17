@@ -251,6 +251,19 @@ class SignalEngine:
             same_direction = (layer1.direction > 0) == (layer2.direction > 0)
             if same_direction:
                 composite_confidence = min(1.0, composite_confidence * 1.4)
+            elif config.require_layer_agreement:
+                composite_confidence *= 0.5
+                logger.debug(
+                    f"Layer disagreement penalty: L1={layer1.direction:+.2f}, "
+                    f"L2={layer2.direction:+.2f}, confidence={composite_confidence:.2f}"
+                )
+
+        if layer2.alignment_count < config.min_l2_alignment:
+            composite_confidence *= 0.5
+            logger.debug(
+                f"L2 alignment below threshold: {layer2.alignment_count}/{layer2.total_timeframes} "
+                f"< {config.min_l2_alignment}, confidence={composite_confidence:.2f}"
+            )
 
         vroc_pct = vroc_data.get("vroc", 0.0)
         vroc_confirmed = vroc_pct >= config.vroc_threshold

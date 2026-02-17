@@ -68,6 +68,10 @@ class SignalConfig:
     vroc_threshold: float = 50.0         # minimum VROC% to confirm breakout volume
     vroc_confidence_penalty: float = 0.5 # multiply confidence by this when VROC is below threshold
 
+    # Signal quality filters
+    min_l2_alignment: int = 4            # require at least 4/6 BTC timeframes aligned
+    require_layer_agreement: bool = True # L1 and L2 must agree on direction
+
 
 @dataclass
 class RiskConfig:
@@ -76,11 +80,12 @@ class RiskConfig:
     max_position_size: float = 3.0       # USD per trade
     max_trades_per_window: int = 3       # per 15-min market
     max_daily_loss: float = 15.0         # USD
-    min_signal_confidence: float = 0.45  # 0.0 - 1.0
+    min_signal_confidence: float = 0.50  # 0.0 - 1.0 (raised from 0.45)
     max_consecutive_losses: int = 3
     cooldown_minutes: int = 30           # after hitting loss limit
     stop_trading_minutes_before_close: int = 5  # stop before market closes
-    max_entry_price: float = 0.80        # max price to pay for a contract (0.0-1.0)
+    min_entry_price: float = 0.25        # min price to buy (avoid volatile low-price tokens)
+    max_entry_price: float = 0.75        # max price to pay for a contract (0.0-1.0)
 
 
 @dataclass
@@ -89,12 +94,12 @@ class ExitConfig:
 
     enabled: bool = True                    # master switch for exit strategy
     trailing_stop_pct: float = 0.20         # sell if price drops 20% from peak
-    hard_stop_pct: float = 0.50             # sell if price drops 50% from entry (absolute floor)
+    hard_stop_pct: float = 0.20             # sell if price drops 20% from entry (absolute floor)
     signal_reversal_threshold: float = 0.15 # exit if composite flips this far against us
-    tighten_at_seconds: int = 180           # tighten trailing stop in final 3 minutes
+    tighten_at_seconds: int = 240           # tighten trailing stop in final 4 minutes
     tightened_trailing_pct: float = 0.10    # trailing stop when time is running out
-    final_seconds: int = 60                 # ultra-tight zone in final 60 seconds
-    final_trailing_pct: float = 0.05        # trailing stop in final seconds
+    final_seconds: int = 90                 # ultra-tight zone in final 90 seconds
+    final_trailing_pct: float = 0.03        # trailing stop in final seconds
     min_hold_seconds: int = 20              # don't exit in the first 20s (avoid noise)
 
     # BTC pressure scaling — short-term TA adjusts stop width
@@ -140,6 +145,18 @@ class ExitConfig:
     atr_base_tp_pct: float = 0.25             # Base TP at median ATR
     atr_scale_factor: float = 0.5             # TP adjustment per ATR std dev
     atr_reference_window: int = 100           # Periods for ATR percentile calculation
+
+    # ATR-Based Stop Loss
+    atr_stop_enabled: bool = True             # Use ATR for dynamic stop loss
+    atr_stop_multiplier: float = 2.0          # Stop at 2x ATR from entry
+    atr_stop_min_pct: float = 0.08            # Minimum 8% stop
+    atr_stop_max_pct: float = 0.18            # Maximum 18% stop
+
+    # Profit-Scaled Trailing Stop
+    profit_scaled_trailing_enabled: bool = True  # Widen trailing as profits grow
+    profit_trail_at_15pct: float = 0.18       # Use 18% trail at 15% gain
+    profit_trail_at_30pct: float = 0.22       # Use 22% trail at 30% gain
+    profit_trail_at_50pct: float = 0.28       # Use 28% trail at 50% gain
 
 
 @dataclass
