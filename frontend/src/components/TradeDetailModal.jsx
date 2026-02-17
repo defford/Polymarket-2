@@ -5,6 +5,7 @@ import {
   Loader2, LogOut
 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
+import PriceHistoryChart from './PriceHistoryChart'
 
 // --- Formatters ---
 
@@ -171,15 +172,22 @@ function parseOrderBook(ob) {
 export default function TradeDetailModal({ trade, onClose }) {
   const { get } = useApi()
   const [details, setDetails] = useState(null)
+  const [priceHistory, setPriceHistory] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [priceHistoryLoading, setPriceHistoryLoading] = useState(true)
   const [viewState, setViewState] = useState('entry') // 'entry' or 'exit'
 
   useEffect(() => {
     if (!trade?.id) return
     setLoading(true)
+    setPriceHistoryLoading(true)
     get(`/api/trades/${trade.id}/details`).then(data => {
       if (data) setDetails(data)
       setLoading(false)
+    })
+    get(`/api/trades/${trade.id}/price-history`).then(data => {
+      if (data) setPriceHistory(data)
+      setPriceHistoryLoading(false)
     })
   }, [trade?.id, get])
 
@@ -281,6 +289,15 @@ export default function TradeDetailModal({ trade, onClose }) {
 
               {/* Section 1.5: Exit Details */}
               {logData?.exit_reason && <ExitDetailsSection logData={logData} trade={details.trade} />}
+
+              {/* Section 1.6: Price History Chart */}
+              <CollapsibleSection title="Price History (15-Min Window)" icon={TrendingUp} iconColor="text-accent-cyan">
+                <PriceHistoryChart
+                  data={priceHistory}
+                  tradeSide={trade.side}
+                  loading={priceHistoryLoading}
+                />
+              </CollapsibleSection>
 
               {/* Section 2: Market Conditions */}
               <MarketConditionsSection stateData={stateData} viewLabel={viewState} />
