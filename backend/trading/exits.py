@@ -200,6 +200,13 @@ async def evaluate_exit(
     if in_survival_buffer:
         if position.current_price > 0 and position.entry_price > 0:
             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
+            
+            if exit_config.atr_stop_enabled and position.entry_atr_value > 0:
+                atr_stop_pct = (position.entry_atr_value * exit_config.atr_stop_multiplier) / position.entry_price
+                atr_stop_pct = max(exit_config.atr_stop_min_pct, 
+                                   min(exit_config.atr_stop_max_pct, atr_stop_pct))
+                survival_hard_stop = atr_stop_pct
+            
             drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
 
             if drop_from_entry >= survival_hard_stop:

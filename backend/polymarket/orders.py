@@ -52,6 +52,7 @@ class OrderManager:
         entry_conviction: float = 0.0,
         entry_btc_price: float = 0.0,
         entry_btc_spread_bps: float = 0.0,
+        entry_atr_value: float = 0.0,
     ) -> Optional[Trade]:
         """
         Place an order on the active market.
@@ -204,6 +205,7 @@ class OrderManager:
                 entry_conviction=entry_conviction,
                 entry_btc_price=entry_btc_price,
                 entry_btc_spread_bps=entry_btc_spread_bps,
+                entry_atr_value=entry_atr_value,
                 is_dry_run=True,
             )
 
@@ -408,6 +410,7 @@ class OrderManager:
                     entry_conviction=entry_conviction,
                     entry_btc_price=entry_btc_price,
                     entry_btc_spread_bps=entry_btc_spread_bps,
+                    entry_atr_value=entry_atr_value,
                     is_dry_run=False,
                 )
             else:

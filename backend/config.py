@@ -80,7 +80,7 @@ class RiskConfig:
     max_position_size: float = 3.0       # USD per trade
     max_trades_per_window: int = 3       # per 15-min market
     max_daily_loss: float = 15.0         # USD
-    min_signal_confidence: float = 0.50  # 0.0 - 1.0 (raised from 0.45)
+    min_signal_confidence: float = 0.40  # 0.0 - 1.0 (composite typically ~0.42)
     max_consecutive_losses: int = 3
     cooldown_minutes: int = 30           # after hitting loss limit
     stop_trading_minutes_before_close: int = 5  # stop before market closes

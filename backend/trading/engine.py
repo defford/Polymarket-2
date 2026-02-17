@@ -371,8 +371,8 @@ class TradingEngine:
                         if position.current_price > 0 and position.entry_price > 0:
                             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
                             
-                            if exit_config.atr_stop_enabled and signal and signal.atr_value:
-                                atr_stop_pct = (signal.atr_value * exit_config.atr_stop_multiplier) / position.entry_price
+                            if exit_config.atr_stop_enabled and position.entry_atr_value > 0:
+                                atr_stop_pct = (position.entry_atr_value * exit_config.atr_stop_multiplier) / position.entry_price
                                 atr_stop_pct = max(exit_config.atr_stop_min_pct, 
                                                    min(exit_config.atr_stop_max_pct, atr_stop_pct))
                                 survival_hard_stop = atr_stop_pct
@@ -974,6 +974,7 @@ class TradingEngine:
                 entry_conviction=signal.composite_confidence,
                 entry_btc_price=current_btc_price,
                 entry_btc_spread_bps=current_btc_spread_bps,
+                entry_atr_value=signal.atr_value if signal else 0.0,
             )
 
         if trade:

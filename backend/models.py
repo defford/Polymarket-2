@@ -174,6 +174,7 @@ class Position(BaseModel):
     entry_conviction: float = 0.0  # composite_confidence at entry (for conviction scaling)
     entry_btc_price: float = 0.0   # BTC price at entry (for divergence monitoring)
     entry_btc_spread_bps: float = 0.0  # BTC spread at entry (for liquidity guard)
+    entry_atr_value: float = 0.0   # ATR at entry (for ATR-based stop loss)
     is_dry_run: bool = True
 
 
