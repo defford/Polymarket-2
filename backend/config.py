@@ -89,7 +89,7 @@ class ExitConfig:
 
     enabled: bool = True                    # master switch for exit strategy
     trailing_stop_pct: float = 0.20         # sell if price drops 20% from peak
-    hard_stop_pct: float = 0.50             # sell if price drops 50% from entry (absolute floor)
+    hard_stop_pct: float = 0.20             # sell if price drops 20% from entry (absolute floor)
     signal_reversal_threshold: float = 0.15 # exit if composite flips this far against us
     tighten_at_seconds: int = 180           # tighten trailing stop in final 3 minutes
     tightened_trailing_pct: float = 0.10    # trailing stop when time is running out
@@ -123,8 +123,8 @@ class ExitConfig:
 
     # Divergence Monitor — detect token noise vs legitimate BTC signal
     divergence_monitor_enabled: bool = True
-    token_noise_threshold_bps: float = 10.0   # Token must drop > this BPS
-    btc_stable_threshold_bps: float = 2.0     # BTC must move < this BPS to classify as noise
+    token_noise_threshold_bps: float = 500.0   # Token must drop > 5% (500 BPS) to consider blocking
+    btc_stable_threshold_bps: float = 100.0     # BTC must move < 1% (100 BPS) to classify as stable
 
     # Signal Decay E-Stop — emergency exit when BTC conviction collapses
     signal_decay_estop_enabled: bool = True

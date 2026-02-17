@@ -172,32 +172,6 @@ async def evaluate_exit(
 
     pressure_val = pressure.get("pressure", 0.0)
 
-    divergence_blocked = False
-    if exit_config.divergence_monitor_enabled and in_survival_buffer:
-        if position.entry_price > 0 and position.current_price > 0:
-            token_drop_bps = abs(position.entry_price - position.current_price) / position.entry_price * 10000
-            btc_move_bps = 0.0
-            if position.entry_btc_price > 0 and current_btc_price > 0:
-                btc_move_bps = abs(current_btc_price - position.entry_btc_price) / position.entry_btc_price * 10000
-            
-            if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
-                divergence_blocked = True
-                logger.info(
-                    f"DIVERGENCE: Token dropped {token_drop_bps:.1f} BPS but BTC only moved {btc_move_bps:.1f} BPS | "
-                    f"Blocking stop during survival buffer"
-                )
-
-    liquidity_guard_active = False
-    if exit_config.liquidity_guard_enabled and current_token_spread_bps > 0:
-        if current_token_spread_bps > exit_config.token_wide_spread_bps:
-            btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
-            if btc_spread_change < exit_config.btc_spread_stable_bps:
-                liquidity_guard_active = True
-                logger.info(
-                    f"LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS > {exit_config.token_wide_spread_bps:.0f} | "
-                    f"BTC spread stable ({btc_spread_change:.0f} BPS change) | Blocking stop-hunt"
-                )
-
     if position.current_price > 0 and position.peak_price > 0:
         drop_from_peak = (position.peak_price - position.current_price) / position.peak_price
 
@@ -219,13 +193,11 @@ async def evaluate_exit(
         "time_zone": time_zone_label,
         "btc_pressure": pressure_val,
         "conviction_tier": conviction_tier,
-        "divergence_blocked": divergence_blocked,
-        "liquidity_guard_active": liquidity_guard_active,
+        "divergence_blocked": False,
+        "liquidity_guard_active": False,
     }
 
     if in_survival_buffer:
-        if divergence_blocked or liquidity_guard_active:
-            return None
         if position.current_price > 0 and position.entry_price > 0:
             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
             drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
@@ -238,7 +210,52 @@ async def evaluate_exit(
                 )
                 logger.info(f"EXIT TRIGGERED -- {reason}")
                 return {**base_decision, "reason": reason, "reason_category": "hard_stop"}
+
+        divergence_blocked = False
+        if exit_config.divergence_monitor_enabled:
+            if position.entry_price > 0 and position.current_price > 0:
+                token_drop_bps = abs(position.entry_price - position.current_price) / position.entry_price * 10000
+                btc_move_bps = 0.0
+                if position.entry_btc_price > 0 and current_btc_price > 0:
+                    btc_move_bps = abs(current_btc_price - position.entry_btc_price) / position.entry_btc_price * 10000
+                
+                if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
+                    divergence_blocked = True
+                    logger.info(
+                        f"DIVERGENCE: Token dropped {token_drop_bps:.1f} BPS but BTC only moved {btc_move_bps:.1f} BPS | "
+                        f"Blocking trailing stop during survival buffer"
+                    )
+
+        liquidity_guard_active = False
+        if exit_config.liquidity_guard_enabled and current_token_spread_bps > 0:
+            if current_token_spread_bps > exit_config.token_wide_spread_bps:
+                btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+                if btc_spread_change < exit_config.btc_spread_stable_bps:
+                    liquidity_guard_active = True
+                    logger.info(
+                        f"LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS | "
+                        f"Blocking trailing stop during survival buffer"
+                    )
+
+        base_decision["divergence_blocked"] = divergence_blocked
+        base_decision["liquidity_guard_active"] = liquidity_guard_active
+
+        if divergence_blocked or liquidity_guard_active:
+            return None
         return None
+
+    liquidity_guard_active = False
+    if exit_config.liquidity_guard_enabled and current_token_spread_bps > 0:
+        if current_token_spread_bps > exit_config.token_wide_spread_bps:
+            btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+            if btc_spread_change < exit_config.btc_spread_stable_bps:
+                liquidity_guard_active = True
+                logger.info(
+                    f"LIQUIDITY GUARD: Token spread={current_token_spread_bps:.0f} BPS > {exit_config.token_wide_spread_bps:.0f} | "
+                    f"BTC spread stable ({btc_spread_change:.0f} BPS change) | Blocking stop-hunt"
+                )
+
+    base_decision["liquidity_guard_active"] = liquidity_guard_active
 
     if liquidity_guard_active:
         logger.info(f"LIQUIDITY GUARD active - blocking trailing/hard stop")

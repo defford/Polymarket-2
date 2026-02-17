@@ -367,45 +367,7 @@ class TradingEngine:
 
                     is_profitable = position.current_price > position.entry_price
 
-                    divergence_blocked = False
-                    if exit_config.divergence_monitor_enabled and in_survival_buffer:
-                        if position.entry_price > 0 and position.current_price > 0:
-                            token_drop_bps = abs(position.entry_price - position.current_price) / position.entry_price * 10000
-                            btc_move_bps = 0.0
-                            if position.entry_btc_price > 0 and current_btc_price > 0:
-                                btc_move_bps = abs(current_btc_price - position.entry_btc_price) / position.entry_btc_price * 10000
-                            
-                            if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
-                                divergence_blocked = True
-                                logger.info(
-                                    f"DIVERGENCE (fast): Token {token_drop_bps:.1f} BPS, BTC {btc_move_bps:.1f} BPS | Blocking stop"
-                                )
-
-                    liquidity_guard_active = False
-                    token_spread_bps = 0.0
-                    try:
-                        token_ob = await self._polymarket.get_order_book(position.token_id)
-                        if token_ob:
-                            bids = token_ob.get("bids", [])
-                            asks = token_ob.get("asks", [])
-                            if bids and asks:
-                                best_bid = float(bids[0].get("price", 0))
-                                best_ask = float(asks[0].get("price", 0))
-                                if best_bid > 0:
-                                    token_spread_bps = (best_ask - best_bid) / best_bid * 10000
-                        if exit_config.liquidity_guard_enabled and token_spread_bps > exit_config.token_wide_spread_bps:
-                            btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
-                            if btc_spread_change < exit_config.btc_spread_stable_bps:
-                                liquidity_guard_active = True
-                                logger.info(
-                                    f"LIQUIDITY GUARD (fast): Token spread={token_spread_bps:.0f} BPS | Blocking stop-hunt"
-                                )
-                    except Exception:
-                        pass
-
                     if in_survival_buffer:
-                        if divergence_blocked or liquidity_guard_active:
-                            continue
                         if position.current_price > 0 and position.entry_price > 0:
                             survival_hard_stop = exit_config.survival_hard_stop_bps / 10000.0
                             drop_from_entry = (position.entry_price - position.current_price) / position.entry_price
@@ -419,7 +381,66 @@ class TradingEngine:
                                 await self._execute_exit(condition_id, reason, "hard_stop", time_zone="SURVIVAL")
                                 exited = True
                                 break
+                        
+                        divergence_blocked = False
+                        if exit_config.divergence_monitor_enabled:
+                            if position.entry_price > 0 and position.current_price > 0:
+                                token_drop_bps = abs(position.entry_price - position.current_price) / position.entry_price * 10000
+                                btc_move_bps = 0.0
+                                if position.entry_btc_price > 0 and current_btc_price > 0:
+                                    btc_move_bps = abs(current_btc_price - position.entry_btc_price) / position.entry_btc_price * 10000
+                                
+                                if token_drop_bps > exit_config.token_noise_threshold_bps and btc_move_bps < exit_config.btc_stable_threshold_bps:
+                                    divergence_blocked = True
+                                    logger.info(
+                                        f"DIVERGENCE (fast): Token {token_drop_bps:.1f} BPS, BTC {btc_move_bps:.1f} BPS | Blocking trailing stop"
+                                    )
+
+                        liquidity_guard_active = False
+                        try:
+                            token_ob = await self._polymarket.get_order_book(position.token_id)
+                            if token_ob:
+                                bids = token_ob.get("bids", [])
+                                asks = token_ob.get("asks", [])
+                                if bids and asks:
+                                    best_bid = float(bids[0].get("price", 0))
+                                    best_ask = float(asks[0].get("price", 0))
+                                    if best_bid > 0:
+                                        token_spread_bps = (best_ask - best_bid) / best_bid * 10000
+                                if exit_config.liquidity_guard_enabled and token_spread_bps > exit_config.token_wide_spread_bps:
+                                    btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+                                    if btc_spread_change < exit_config.btc_spread_stable_bps:
+                                        liquidity_guard_active = True
+                                        logger.info(
+                                            f"LIQUIDITY GUARD (fast): Token spread={token_spread_bps:.0f} BPS | Blocking trailing stop"
+                                        )
+                        except Exception:
+                            pass
+
+                        if divergence_blocked or liquidity_guard_active:
+                            continue
                         continue
+
+                    liquidity_guard_active = False
+                    try:
+                        token_ob = await self._polymarket.get_order_book(position.token_id)
+                        if token_ob:
+                            bids = token_ob.get("bids", [])
+                            asks = token_ob.get("asks", [])
+                            if bids and asks:
+                                best_bid = float(bids[0].get("price", 0))
+                                best_ask = float(asks[0].get("price", 0))
+                                if best_bid > 0:
+                                    token_spread_bps = (best_ask - best_bid) / best_bid * 10000
+                            if exit_config.liquidity_guard_enabled and token_spread_bps > exit_config.token_wide_spread_bps:
+                                btc_spread_change = abs(current_btc_spread_bps - position.entry_btc_spread_bps)
+                                if btc_spread_change < exit_config.btc_spread_stable_bps:
+                                    liquidity_guard_active = True
+                                    logger.info(
+                                        f"LIQUIDITY GUARD (fast): Token spread={token_spread_bps:.0f} BPS | Blocking stop-hunt"
+                                    )
+                    except Exception:
+                        pass
 
                     if liquidity_guard_active:
                         continue
