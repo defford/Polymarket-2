@@ -783,13 +783,19 @@ async def get_trade_price_history(trade_id: int):
                 minute_buckets[minute] = []
             minute_buckets[minute].append(p)
         
+        if not minute_buckets:
+            return []
+        
+        max_observed_minute = max(minute_buckets.keys())
+        
         result = []
-        for minute in range(16):
+        for minute in range(int(max_observed_minute) + 1):
             if minute in minute_buckets:
                 avg_price = sum(minute_buckets[minute]) / len(minute_buckets[minute])
             else:
-                closest_minute = min(minute_buckets.keys(), key=lambda m: abs(m - minute)) if minute_buckets else minute
-                avg_price = sum(minute_buckets[closest_minute]) / len(minute_buckets[closest_minute]) if minute_buckets else 0.5
+                available_minutes = sorted(minute_buckets.keys())
+                lower = max([m for m in available_minutes if m < minute], default=available_minutes[0])
+                avg_price = sum(minute_buckets[lower]) / len(minute_buckets[lower])
             result.append({"minute": minute, "price": round(avg_price, 4)})
         return result
     
