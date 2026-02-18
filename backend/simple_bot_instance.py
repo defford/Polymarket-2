@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional, Callable
 
 from models import (
-    BotState, DailyStats, MarketInfo, Position, Side, Trade,
+    BotState, BotStatus, DailyStats, MarketInfo, Position, Side, Trade,
     OrderStatus, SimpleBotRule
 )
 from polymarket.client import PolymarketClient
@@ -56,7 +56,7 @@ class SimpleBotInstance:
         self._state_lock = asyncio.Lock()
 
         self._state = BotState(
-            status="stopped",
+            status=BotStatus.STOPPED,
             mode=mode,
         )
 
@@ -65,7 +65,7 @@ class SimpleBotInstance:
 
     @property
     def status(self) -> str:
-        return self._state.status.value if self._state.status else "stopped"
+        return self._state.status.value
 
     @property
     def is_running(self) -> bool:
@@ -80,7 +80,7 @@ class SimpleBotInstance:
             return
 
         self._running = True
-        self._state.status = "running" if not self.is_dry_run else "dry_run"
+        self._state.status = BotStatus.RUNNING if not self.is_dry_run else BotStatus.DRY_RUN
         self._state.mode = self.mode
         logger.info(
             f"Simple bot #{self.bot_id} starting: {self.rule.buy_side.value} "
@@ -110,7 +110,7 @@ class SimpleBotInstance:
             except asyncio.CancelledError:
                 pass
 
-        self._state.status = "stopped"
+        self._state.status = BotStatus.STOPPED
         logger.info(f"Simple bot #{self.bot_id} stopped")
 
     async def _trading_loop(self):
@@ -129,7 +129,7 @@ class SimpleBotInstance:
                 logger.error(f"Simple bot #{self.bot_id} cycle error ({consecutive_errors}): {e}")
                 if consecutive_errors >= max_consecutive_errors:
                     logger.error(f"Simple bot #{self.bot_id} stopping due to repeated errors")
-                    self._state.status = "error"
+                    self._state.status = BotStatus.ERROR
                     break
                 await asyncio.sleep(5.0)
 
