@@ -719,6 +719,7 @@ async def get_trade_price_history(trade_id: int):
     
     buy_state = log_data.get("buy_state", {})
     market_info = buy_state.get("market", {})
+    sell_state = log_data.get("sell_state", {})
     
     up_token_id = market_info.get("up_token_id")
     down_token_id = market_info.get("down_token_id")
@@ -733,6 +734,21 @@ async def get_trade_price_history(trade_id: int):
     window_start_ts = (int(trade.timestamp.timestamp()) // 900) * 900
     window_end_ts = window_start_ts + 900
     
+    entry_ts = int(trade.timestamp.timestamp())
+    entry_minute = max(0, min(15, (entry_ts - window_start_ts) // 60))
+    entry_price = trade.price
+    
+    exit_price = log_data.get("exit_price")
+    position_duration = log_data.get("position_held_duration_seconds")
+    exit_minute = None
+    if position_duration is not None and exit_price is not None:
+        exit_ts = entry_ts + int(position_duration)
+        exit_minute = max(0, min(15, (exit_ts - window_start_ts) // 60))
+    
+    up_prices = []
+    down_prices = []
+    has_intra_window_data = False
+    
     try:
         up_history_raw = await polymarket_client.get_price_history(
             up_token_id, interval="1d", fidelity=60
@@ -740,78 +756,72 @@ async def get_trade_price_history(trade_id: int):
         down_history_raw = await polymarket_client.get_price_history(
             down_token_id, interval="1d", fidelity=60
         )
+        
+        def filter_to_window(history, start_ts, end_ts):
+            if not history:
+                return []
+            filtered = []
+            for point in history:
+                t = point.get("t", 0)
+                if isinstance(t, str):
+                    try:
+                        t = int(t)
+                    except ValueError:
+                        continue
+                if start_ts <= t <= end_ts:
+                    p = point.get("p", 0.5)
+                    try:
+                        p = float(p)
+                    except (ValueError, TypeError):
+                        p = 0.5
+                    filtered.append({"t": t, "p": p})
+            return filtered
+        
+        up_filtered = filter_to_window(up_history_raw, window_start_ts, window_end_ts)
+        down_filtered = filter_to_window(down_history_raw, window_start_ts, window_end_ts)
+        
+        if up_filtered and down_filtered:
+            has_intra_window_data = True
+            
+            def aggregate_to_minutes(history, start_ts):
+                if not history:
+                    return []
+                
+                minute_buckets = {}
+                for point in history:
+                    t, p = point["t"], point["p"]
+                    minute = (t - start_ts) // 60
+                    if minute not in minute_buckets:
+                        minute_buckets[minute] = []
+                    minute_buckets[minute].append(p)
+                
+                result = []
+                for minute in sorted(minute_buckets.keys()):
+                    avg_price = sum(minute_buckets[minute]) / len(minute_buckets[minute])
+                    result.append({"minute": int(minute), "price": round(avg_price, 4)})
+                return result
+            
+            up_prices = aggregate_to_minutes(up_filtered, window_start_ts)
+            down_prices = aggregate_to_minutes(down_filtered, window_start_ts)
     except Exception as e:
         logger.warning(f"Could not fetch price history for trade {trade_id}: {e}")
-        return {
-            "available": False,
-            "reason": f"Could not fetch price history: {str(e)}",
-            "trade_side": trade.side.value,
-        }
     
-    def filter_to_window(history, start_ts, end_ts):
-        if not history:
-            return []
-        filtered = []
-        for point in history:
-            t = point.get("t", 0)
-            if isinstance(t, str):
-                try:
-                    t = int(t)
-                except ValueError:
-                    continue
-            if start_ts <= t <= end_ts:
-                p = point.get("p", 0.5)
-                try:
-                    p = float(p)
-                except (ValueError, TypeError):
-                    p = 0.5
-                filtered.append({"t": t, "p": p})
-        return filtered
-    
-    up_filtered = filter_to_window(up_history_raw, window_start_ts, window_end_ts)
-    down_filtered = filter_to_window(down_history_raw, window_start_ts, window_end_ts)
-    
-    def aggregate_to_minutes(history, start_ts):
-        if not history:
-            return []
+    if not has_intra_window_data:
+        entry_up = market_info.get("up_price")
+        entry_down = market_info.get("down_price")
+        exit_up = sell_state.get("market", {}).get("up_price") if sell_state else None
+        exit_down = sell_state.get("market", {}).get("down_price") if sell_state else None
         
-        minute_buckets = {}
-        for point in history:
-            t, p = point["t"], point["p"]
-            minute = (t - start_ts) // 60
-            if minute not in minute_buckets:
-                minute_buckets[minute] = []
-            minute_buckets[minute].append(p)
+        if entry_up is not None:
+            up_prices.append({"minute": entry_minute, "price": round(entry_up, 4)})
+        if entry_down is not None:
+            down_prices.append({"minute": entry_minute, "price": round(entry_down, 4)})
         
-        if not minute_buckets:
-            return []
-        
-        max_observed_minute = max(minute_buckets.keys())
-        
-        result = []
-        for minute in range(int(max_observed_minute) + 1):
-            if minute in minute_buckets:
-                avg_price = sum(minute_buckets[minute]) / len(minute_buckets[minute])
-            else:
-                available_minutes = sorted(minute_buckets.keys())
-                lower = max([m for m in available_minutes if m < minute], default=available_minutes[0])
-                avg_price = sum(minute_buckets[lower]) / len(minute_buckets[lower])
-            result.append({"minute": minute, "price": round(avg_price, 4)})
-        return result
-    
-    up_prices = aggregate_to_minutes(up_filtered, window_start_ts)
-    down_prices = aggregate_to_minutes(down_filtered, window_start_ts)
-    
-    entry_ts = int(trade.timestamp.timestamp())
-    entry_minute = max(0, min(15, (entry_ts - window_start_ts) // 60))
-    entry_price = trade.price
-    
-    exit_minute = None
-    exit_price = log_data.get("exit_price")
-    position_duration = log_data.get("position_held_duration_seconds")
-    if position_duration is not None and exit_price is not None:
-        exit_ts = entry_ts + int(position_duration)
-        exit_minute = max(0, min(15, (exit_ts - window_start_ts) // 60))
+        if exit_minute is not None and exit_price is not None:
+            if exit_up is not None:
+                up_prices.append({"minute": exit_minute, "price": round(exit_up, 4)})
+            if exit_down is not None:
+                down_prices.append({"minute": exit_minute, "price": round(exit_down, 4)})
     
     return {
         "available": True,
@@ -824,6 +834,7 @@ async def get_trade_price_history(trade_id: int):
         "trade_side": trade.side.value,
         "window_start": window_start_ts,
         "window_end": window_end_ts,
+        "has_intra_window_data": has_intra_window_data,
     }
 
 

@@ -48,6 +48,8 @@ function CustomLegend() {
 }
 
 export default function PriceHistoryChart({ data, tradeSide, loading }) {
+  const hasIntraWindowData = data?.has_intra_window_data
+  
   const chartData = useMemo(() => {
     if (!data?.available || !data.up_prices || !data.down_prices) return []
     
@@ -89,6 +91,83 @@ export default function PriceHistoryChart({ data, tradeSide, loading }) {
           {data?.reason && (
             <p className="text-2xs text-text-dim mt-1">{data.reason}</p>
           )}
+        </div>
+      </div>
+    )
+  }
+
+  if (!hasIntraWindowData) {
+    const entryUp = data?.up_prices?.find(p => p.minute === entryMinute)?.price
+    const entryDown = data?.down_prices?.find(p => p.minute === entryMinute)?.price
+    const exitUp = data?.up_prices?.find(p => p.minute === exitMinute && p.minute !== entryMinute)?.price
+    const exitDown = data?.down_prices?.find(p => p.minute === exitMinute && p.minute !== entryMinute)?.price
+    
+    return (
+      <div className="w-full">
+        <div className="bg-surface-2 rounded-lg p-4 mb-3">
+          <p className="text-xs text-text-dim text-center">
+            Polymarket price history API only provides hourly data points, not minute-by-minute data.
+            Showing entry and exit points from trade logs.
+          </p>
+        </div>
+        
+        <div className="grid grid-cols-2 gap-4 mb-3">
+          <div className="bg-surface-2 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-2.5 h-2.5 rounded-full bg-white border-2" style={{ borderColor: isUp ? '#00e676' : '#ff1744' }} />
+              <span className="text-xs font-mono font-medium text-text-secondary">Entry</span>
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Minute</span>
+                <span className="text-xs font-mono text-text-primary">{entryMinute}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Up Token</span>
+                <span className="text-xs font-mono text-accent-green">{formatPrice(entryUp)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Down Token</span>
+                <span className="text-xs font-mono text-accent-red">{formatPrice(entryDown)}</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-surface-2 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-2.5 h-2.5 rounded-full bg-white border-2 border-dashed" style={{ borderColor: isUp ? '#00e676' : '#ff1744' }} />
+              <span className="text-xs font-mono font-medium text-text-secondary">
+                {exitMinute != null && exitPrice != null ? 'Exit' : 'Resolution'}
+              </span>
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Minute</span>
+                <span className="text-xs font-mono text-text-primary">
+                  {exitMinute != null ? exitMinute : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Up Token</span>
+                <span className="text-xs font-mono text-accent-green">{formatPrice(exitUp)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-2xs text-text-dim">Down Token</span>
+                <span className="text-xs font-mono text-accent-red">{formatPrice(exitDown)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-surface-2 rounded-lg p-3">
+          <div className="flex justify-between items-center">
+            <span className="text-xs font-mono text-text-dim">
+              {isUp ? 'UP' : 'DOWN'} Position
+            </span>
+            <span className={`text-sm font-mono font-bold ${entryPrice < (exitPrice ?? 0) ? 'text-accent-green' : 'text-accent-red'}`}>
+              {formatPrice(entryPrice)} → {exitPrice != null ? formatPrice(exitPrice) : '—'}
+            </span>
+          </div>
         </div>
       </div>
     )
