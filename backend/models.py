@@ -265,6 +265,28 @@ class BotRecord(BaseModel):
     status: str = "stopped"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    is_simple: bool = False
+    simple_rules_json: Optional[str] = None
+
+
+class SimpleBotRule(BaseModel):
+    """Rule configuration for a Simple Bot."""
+    market_condition_id: Optional[str] = None
+    buy_side: Side
+    buy_price: float
+    sell_price: float
+    size_usd: float = 5.0
+
+
+class CreateSimpleBotRequest(BaseModel):
+    """Request body for creating a simple bot."""
+    name: str
+    description: str = ""
+    buy_side: str
+    buy_price: float
+    sell_price: float
+    size_usd: float = 5.0
+    market_condition_id: Optional[str] = None
 
 
 class CreateBotRequest(BaseModel):

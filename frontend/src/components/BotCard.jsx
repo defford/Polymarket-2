@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Play, Square, TrendingUp, BarChart3, Target, ChevronRight, Trash2, Pencil } from 'lucide-react'
+import { Play, Square, TrendingUp, BarChart3, Target, ChevronRight, Trash2, Pencil, Zap } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 
 const STATUS_BADGES = {
@@ -104,6 +104,12 @@ export default function BotCard({ bot, wsState, onClick, onRefresh }) {
                 <h3 className="text-sm font-display font-bold text-text-primary truncate">
                   {bot.name}
                 </h3>
+              )}
+              {bot.is_simple && (
+                <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-2xs font-mono font-bold bg-accent-cyan/20 text-accent-cyan">
+                  <Zap className="w-2.5 h-2.5" />
+                  SIMPLE
+                </span>
               )}
               <span className={badge.cls}>
                 {isRunning && (

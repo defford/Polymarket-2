@@ -1,15 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Copy, Check, Brain } from 'lucide-react'
+import { Plus, Copy, Check, Brain, Zap } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import SwarmSummary from './SwarmSummary'
 import BotCard from './BotCard'
 import AddBotModal from './AddBotModal'
+import AddSimpleBotModal from './AddSimpleBotModal'
 import AnalysisPanel from './AnalysisPanel'
 
 export default function SwarmView({ swarmState, onSelectBot }) {
   const { get } = useApi()
   const [bots, setBots] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showAddSimpleModal, setShowAddSimpleModal] = useState(false)
   const [showAnalysis, setShowAnalysis] = useState(false)
   const [copyStatus, setCopyStatus] = useState('idle') // idle, loading, success, error
 
@@ -118,6 +120,19 @@ export default function SwarmView({ swarmState, onSelectBot }) {
           />
         ))}
 
+        {/* Add Simple Bot Card */}
+        <button
+          onClick={() => setShowAddSimpleModal(true)}
+          className="card border-dashed border-accent-cyan/30 hover:border-accent-cyan/50 transition-all cursor-pointer group min-h-[160px] flex items-center justify-center bg-accent-cyan/5"
+        >
+          <div className="text-center">
+            <Zap className="w-8 h-8 text-accent-cyan/50 group-hover:text-accent-cyan transition-colors mx-auto mb-2" />
+            <span className="text-xs font-mono text-text-secondary group-hover:text-accent-cyan transition-colors">
+              Add Simple Bot
+            </span>
+          </div>
+        </button>
+
         {/* Add Bot Card */}
         <button
           onClick={() => setShowAddModal(true)}
@@ -136,6 +151,13 @@ export default function SwarmView({ swarmState, onSelectBot }) {
         <AddBotModal
           bots={bots}
           onClose={() => setShowAddModal(false)}
+          onCreated={() => fetchBots()}
+        />
+      )}
+
+      {showAddSimpleModal && (
+        <AddSimpleBotModal
+          onClose={() => setShowAddSimpleModal(false)}
           onCreated={() => fetchBots()}
         />
       )}

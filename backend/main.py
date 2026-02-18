@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from config import config_manager, API_HOST, API_PORT
 from models import (
     BotState, ConfigUpdateRequest, CreateBotRequest, UpdateBotRequest,
+    CreateSimpleBotRequest, SimpleBotRule, Side,
 )
 from trading.trade_logger import trade_logger
 from swarm import SwarmManager
@@ -160,6 +161,41 @@ async def create_bot(request: CreateBotRequest):
     return {"bot_id": bot_id, "message": f"Bot '{request.name}' created"}
 
 
+@app.post("/api/simple-bot")
+async def create_simple_bot(request: CreateSimpleBotRequest):
+    """Create a new simple bot with basic trading rules."""
+    if request.buy_price >= request.sell_price:
+        raise HTTPException(status_code=400, detail="Buy price must be less than sell price")
+    if request.buy_price < 0.01 or request.buy_price > 0.99:
+        raise HTTPException(status_code=400, detail="Buy price must be between 0.01 and 0.99")
+    if request.sell_price < 0.01 or request.sell_price > 0.99:
+        raise HTTPException(status_code=400, detail="Sell price must be between 0.01 and 0.99")
+    if request.size_usd <= 0:
+        raise HTTPException(status_code=400, detail="Size must be greater than 0")
+
+    try:
+        buy_side = Side(request.buy_side.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="buy_side must be 'up' or 'down'")
+
+    rule = SimpleBotRule(
+        market_condition_id=request.market_condition_id,
+        buy_side=buy_side,
+        buy_price=request.buy_price,
+        sell_price=request.sell_price,
+        size_usd=request.size_usd,
+    )
+
+    bot_id = await swarm_manager.create_simple_bot(
+        name=request.name,
+        description=request.description,
+        rule=rule,
+        mode="dry_run",
+    )
+
+    return {"bot_id": bot_id, "message": f"Simple bot '{request.name}' created"}
+
+
 @app.get("/api/swarm/summary")
 async def get_swarm_summary(time_scale: str = "all"):
     """Get cumulative performance across all bots."""
@@ -228,6 +264,8 @@ async def update_bot_info(bot_id: int, request: UpdateBotRequest):
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
 
+    from simple_bot_instance import SimpleBotInstance
+    is_simple = isinstance(instance, SimpleBotInstance)
     updates = {}
     if request.name is not None:
         instance.name = request.name
@@ -235,14 +273,15 @@ async def update_bot_info(bot_id: int, request: UpdateBotRequest):
     if request.description is not None:
         instance.description = request.description
         updates["description"] = request.description
-    if request.config_enabled is not None:
+    if request.config_enabled is not None and not is_simple:
         instance.set_config_enabled(request.config_enabled)
         updates["config_enabled"] = 1 if request.config_enabled else 0
     if updates:
         updates["updated_at"] = datetime.now(timezone.utc)
         db.update_bot(bot_id, **updates)
 
-    return {"message": "Bot updated", "bot_id": bot_id, "config_enabled": instance.is_config_enabled()}
+    config_enabled = False if is_simple else instance.is_config_enabled()
+    return {"message": "Bot updated", "bot_id": bot_id, "config_enabled": config_enabled}
 
 
 @app.delete("/api/swarm/{bot_id}")
@@ -292,6 +331,22 @@ async def get_bot_config(bot_id: int):
     instance = swarm_manager.get_bot(bot_id)
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    from simple_bot_instance import SimpleBotInstance
+    if isinstance(instance, SimpleBotInstance):
+        return {
+            "config": {},
+            "config_enabled": False,
+            "is_simple": True,
+            "simple_rule": {
+                "buy_side": instance.rule.buy_side.value,
+                "buy_price": instance.rule.buy_price,
+                "sell_price": instance.rule.sell_price,
+                "size_usd": instance.rule.size_usd,
+                "market_condition_id": instance.rule.market_condition_id,
+            },
+        }
+    
     return {
         "config": instance.get_config().to_dict(),
         "config_enabled": instance.is_config_enabled(),
@@ -305,6 +360,11 @@ async def update_bot_config(bot_id: int, request: ConfigUpdateRequest):
     instance = swarm_manager.get_bot(bot_id)
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    from simple_bot_instance import SimpleBotInstance
+    if isinstance(instance, SimpleBotInstance):
+        raise HTTPException(status_code=400, detail="Cannot update config for simple bots")
+    
     try:
         data = request.model_dump(exclude_none=True)
         updated = instance.update_config(data)
@@ -373,9 +433,12 @@ async def get_bot_status(bot_id: int):
     instance = swarm_manager.get_bot(bot_id)
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
+    from simple_bot_instance import SimpleBotInstance
+    mode = instance.mode if isinstance(instance, SimpleBotInstance) else instance.get_config().mode
     return {
         "status": instance.status,
-        "mode": instance.get_config().mode,
+        "mode": mode,
         "is_running": instance.is_running,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -452,11 +515,10 @@ async def generate_config(
             detail=f"Not enough trade data ({analysis.get('trade_count', 0)} trades). Need at least 10 filled trades.",
         )
 
-    # Load base config
     base_config = None
     if base_config_from_bot:
         instance = swarm_manager.get_bot(base_config_from_bot)
-        if instance:
+        if instance and hasattr(instance, 'get_config'):
             base_config = instance.get_config()
     if not base_config:
         base_config = BotConfig()
@@ -528,6 +590,14 @@ async def get_bayesian_stats(bot_id: int):
     if not instance:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
     
+    from simple_bot_instance import SimpleBotInstance
+    if isinstance(instance, SimpleBotInstance):
+        return {
+            "bot_id": bot_id,
+            "enabled": False,
+            "message": "Bayesian inference is not applicable to simple bots",
+        }
+    
     config = instance.get_config()
     if not config.bayesian.enabled:
         return {
@@ -589,9 +659,12 @@ async def get_status():
     instance = _get_default_bot()
     if not instance:
         return {"status": "stopped", "mode": "dry_run", "is_running": False}
+    
+    from simple_bot_instance import SimpleBotInstance
+    mode = instance.mode if isinstance(instance, SimpleBotInstance) else instance.get_config().mode
     return {
         "status": instance.status,
-        "mode": instance.get_config().mode,
+        "mode": mode,
         "is_running": instance.is_running,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -1126,6 +1199,16 @@ async def get_config():
     instance = _get_default_bot()
     if not instance:
         return config_manager.config.to_dict()
+    
+    from simple_bot_instance import SimpleBotInstance
+    if isinstance(instance, SimpleBotInstance):
+        return {"is_simple": True, "simple_rule": {
+            "buy_side": instance.rule.buy_side.value,
+            "buy_price": instance.rule.buy_price,
+            "sell_price": instance.rule.sell_price,
+            "size_usd": instance.rule.size_usd,
+        }}
+    
     return instance.get_config().to_dict()
 
 
@@ -1135,6 +1218,11 @@ async def update_config(request: ConfigUpdateRequest):
     instance = _get_default_bot()
     if not instance:
         raise HTTPException(status_code=404, detail="No bot available")
+    
+    from simple_bot_instance import SimpleBotInstance
+    if isinstance(instance, SimpleBotInstance):
+        raise HTTPException(status_code=400, detail="Cannot update config for simple bots")
+    
     try:
         data = request.model_dump(exclude_none=True)
         updated = instance.update_config(data)

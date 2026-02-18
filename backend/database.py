@@ -129,6 +129,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Migration: Add is_simple column to bots for Simple Bots
+    try:
+        conn.execute("ALTER TABLE bots ADD COLUMN is_simple INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration: Add simple_rules_json column to bots for Simple Bots
+    try:
+        conn.execute("ALTER TABLE bots ADD COLUMN simple_rules_json TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+
     # Create indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_bot ON trades(bot_id)")
@@ -574,6 +586,8 @@ def _row_to_bot(row: sqlite3.Row) -> BotRecord:
         status=row["status"],
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        is_simple=bool(row["is_simple"]) if "is_simple" in row.keys() else False,
+        simple_rules_json=row["simple_rules_json"] if "simple_rules_json" in row.keys() else None,
     )
 
 
