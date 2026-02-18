@@ -522,8 +522,8 @@ def create_bot(bot: BotRecord) -> int:
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO bots
-           (name, description, config_json, mode, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (name, description, config_json, mode, status, created_at, updated_at, is_simple, simple_rules_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             bot.name,
             bot.description,
@@ -532,6 +532,8 @@ def create_bot(bot: BotRecord) -> int:
             bot.status,
             bot.created_at.isoformat() if bot.created_at else datetime.utcnow().isoformat(),
             bot.updated_at.isoformat() if bot.updated_at else datetime.utcnow().isoformat(),
+            1 if bot.is_simple else 0,
+            bot.simple_rules_json,
         ),
     )
     bot_id = cursor.lastrowid

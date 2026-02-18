@@ -79,6 +79,22 @@ class SimpleBotInstance:
             logger.warning(f"Simple bot #{self.bot_id} already running")
             return
 
+        if self._polymarket_client is None:
+            self._polymarket_client = PolymarketClient()
+
+        if self.is_dry_run:
+            self._polymarket_client.init_read_only()
+        else:
+            try:
+                self._polymarket_client.init_authenticated()
+            except Exception as e:
+                logger.error(f"Failed to init authenticated client for bot #{self.bot_id}: {e}")
+                self._state.status = BotStatus.ERROR
+                raise RuntimeError(
+                    f"Simple bot cannot start in live mode: {e}. "
+                    f"Check POLYMARKET_PRIVATE_KEY and POLYMARKET_PROXY_ADDRESS in .env."
+                ) from e
+
         self._running = True
         self._state.status = BotStatus.RUNNING if not self.is_dry_run else BotStatus.DRY_RUN
         self._state.mode = self.mode
