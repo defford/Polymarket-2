@@ -312,7 +312,18 @@ class TradingEngine:
                     ws_price = self._stream.prices.get_midpoint(position.token_id)
                     if ws_price is None or not self._stream.is_price_fresh(position.token_id):
                         try:
-                            ws_price = await self._polymarket.get_midpoint(position.token_id)
+                            ws_price, market_exists = await self._polymarket.get_midpoint(position.token_id)
+                            if not market_exists:
+                                # Market closed - trigger resolution for this stale position
+                                logger.warning(
+                                    f"Detected closed market for position {condition_id[:16]}... "
+                                    f"Triggering market close resolution."
+                                )
+                                try:
+                                    await self._handle_market_close(condition_id)
+                                except Exception as e:
+                                    logger.error(f"Failed to resolve stale position {condition_id[:16]}...: {e}")
+                                continue
                         except Exception:
                             continue
                     if ws_price is None:
@@ -639,12 +650,16 @@ class TradingEngine:
             if up_mid is not None and self._stream.is_price_fresh(market.up_token_id):
                 market.up_price = up_mid
             else:
-                market.up_price = await self._polymarket.get_midpoint(market.up_token_id)
+                price, exists = await self._polymarket.get_midpoint(market.up_token_id)
+                if exists:
+                    market.up_price = price
             
             if down_mid is not None and self._stream.is_price_fresh(market.down_token_id):
                 market.down_price = down_mid
             else:
-                market.down_price = await self._polymarket.get_midpoint(market.down_token_id)
+                price, exists = await self._polymarket.get_midpoint(market.down_token_id)
+                if exists:
+                    market.down_price = price
         except Exception as e:
             logger.debug(f"Error updating market prices: {e}")
 
@@ -872,8 +887,11 @@ class TradingEngine:
                     logger.warning(f"Market {old_condition_id} closed but no winner flag found in tokens")
             
             if resolution == 0.5:
-                final_price = await self._polymarket.get_midpoint(pos.token_id)
-                if final_price > 0.9:
+                final_price, market_exists = await self._polymarket.get_midpoint(pos.token_id)
+                if not market_exists:
+                    logger.warning(f"Cannot determine resolution - market closed for {old_condition_id}")
+                    resolution = 0.5
+                elif final_price > 0.9:
                     resolution = 1.0
                 elif final_price < 0.1:
                     resolution = 0.0

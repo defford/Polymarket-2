@@ -258,7 +258,12 @@ class SimpleBotInstance:
 
     async def _simulate_buy(self, market: MarketInfo, token_id: str, size_tokens: float):
         """Simulate a buy order in dry-run mode."""
-        current_price = await self._polymarket_client.get_midpoint(token_id)
+        current_price, market_exists = await self._polymarket_client.get_midpoint(token_id)
+        
+        if not market_exists:
+            logger.warning(f"Bot #{self.bot_id}: Market closed for token {token_id[:16]}...")
+            await asyncio.sleep(POLL_INTERVAL)
+            return
 
         if current_price <= self.rule.buy_price:
             logger.info(
@@ -369,7 +374,12 @@ class SimpleBotInstance:
             return
 
         position = self._current_position
-        current_price = await self._polymarket_client.get_midpoint(position.token_id)
+        current_price, market_exists = await self._polymarket_client.get_midpoint(position.token_id)
+        
+        if not market_exists:
+            logger.warning(f"Bot #{self.bot_id}: Market closed for token {position.token_id[:16]}...")
+            await asyncio.sleep(POLL_INTERVAL)
+            return
 
         if current_price >= self.rule.sell_price:
             proceeds = self.rule.sell_price * position.size

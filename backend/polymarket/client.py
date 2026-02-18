@@ -172,21 +172,34 @@ class PolymarketClient:
 
     # --- Read Operations (async wrappers) ---
 
-    async def get_midpoint(self, token_id: str) -> float:
-        """Get midpoint price for a token (async, cached)."""
+    async def get_midpoint(self, token_id: str) -> tuple[float, bool]:
+        """
+        Get midpoint price for a token (async, cached).
+        
+        Returns:
+            tuple: (midpoint_price, market_exists)
+            - midpoint_price: The midpoint price (0.5 fallback if unavailable)
+            - market_exists: False if the market/orderbook no longer exists (404)
+        """
         now = time.time()
         cached = self._midpoint_cache.get(token_id)
         if cached and (now - cached[1]) < ORDERBOOK_CACHE_TTL:
-            return cached[0]
+            return cached[0], True
         
         try:
             result = await asyncio.to_thread(self.client.get_midpoint, token_id)
             midpoint = float(result.get("mid", 0.5))
             self._midpoint_cache[token_id] = (midpoint, now)
-            return midpoint
+            return midpoint, True
         except Exception as e:
-            logger.error(f"Error getting midpoint for {token_id}: {e}")
-            return cached[0] if cached else 0.5
+            error_str = str(e)
+            # Check if this is a "market closed" scenario (404 - no orderbook)
+            if "404" in error_str or "No orderbook exists" in error_str:
+                logger.debug(f"Market closed for token {token_id[:16]}... (no orderbook)")
+                return cached[0] if cached else 0.5, False
+            else:
+                logger.error(f"Error getting midpoint for {token_id}: {e}")
+                return cached[0] if cached else 0.5, True
 
     async def get_price(self, token_id: str, side: str = "BUY") -> float:
         """Get best price for a token on a given side (async)."""

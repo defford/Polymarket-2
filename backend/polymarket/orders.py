@@ -797,7 +797,10 @@ class OrderManager:
             return
 
         try:
-            current_price = await self._pm_client.get_midpoint(position.token_id)
+            current_price, market_exists = await self._pm_client.get_midpoint(position.token_id)
+            if not market_exists:
+                logger.debug(f"Market closed for position {condition_id[:16]}..., skipping price update")
+                return
             position.current_price = current_price
             position.unrealized_pnl = (current_price - position.entry_price) * position.size
 
