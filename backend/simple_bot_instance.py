@@ -199,6 +199,8 @@ class SimpleBotInstance:
                 if time_remaining and time_remaining < 30:
                     await self._polymarket_client.cancel_order(self._current_order_id)
                     self._current_order_id = None
+                    return
+                await asyncio.sleep(POLL_INTERVAL)
                 return
         else:
             try:
@@ -287,8 +289,7 @@ class SimpleBotInstance:
                 f"Bot #{self.bot_id} DRY RUN: Waiting for price to drop to {self.rule.buy_price:.2f} "
                 f"(current: {current_price:.2f})"
             )
-
-        await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(POLL_INTERVAL)
 
     async def _handle_sell(self, market: MarketInfo):
         """Place and manage sell limit order."""
@@ -319,6 +320,8 @@ class SimpleBotInstance:
                 if time_remaining and time_remaining < 30:
                     await self._polymarket_client.cancel_order(self._current_order_id)
                     self._current_order_id = None
+                    return
+                await asyncio.sleep(POLL_INTERVAL)
                 return
         else:
             try:
@@ -399,8 +402,7 @@ class SimpleBotInstance:
                 f"Bot #{self.bot_id} DRY RUN: Waiting for price to rise to {self.rule.sell_price:.2f} "
                 f"(current: {current_price:.2f})"
             )
-
-        await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(POLL_INTERVAL)
 
     async def _check_order_status(self, order_id: str) -> str:
         """Check the status of an order."""
