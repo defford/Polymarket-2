@@ -468,8 +468,7 @@ class SimpleBotInstance:
 
     def _update_state_with_trade(self, trade: Trade):
         """Update bot state with a new trade."""
-        async with self._state_lock:
-            self._state.recent_trades = [trade] + self._state.recent_trades[:9]
+        self._state.recent_trades = [trade] + self._state.recent_trades[:9]
         self._update_pnl()
 
     def _update_pnl(self):
