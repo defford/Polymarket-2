@@ -64,13 +64,24 @@ class SwarmManager:
             instance_ref = target.get(bot_record.id)
             if bot_record.status in ("running", "dry_run") and instance_ref:
                 logger.info(f"Resuming bot #{bot_record.id} in {bot_record.status} mode...")
-                try:
-                    asyncio.create_task(instance_ref.start())
-                except Exception as e:
-                    logger.error(f"Failed to resume bot #{bot_record.id}: {e}")
-                    db.update_bot(bot_record.id, status="error")
+                task = asyncio.create_task(
+                    self._safe_start_bot(bot_record.id, instance_ref)
+                )
 
         logger.info(f"Swarm initialized with {len(self._bots)} bot(s) and {len(self._simple_bots)} simple bot(s)")
+
+    async def _safe_start_bot(self, bot_id: int, instance):
+        """Start a bot with proper error handling for auto-resume."""
+        try:
+            await instance.start()
+            db.update_bot(
+                bot_id,
+                status=instance.status,
+                updated_at=datetime.now(timezone.utc),
+            )
+        except Exception as e:
+            logger.error(f"Failed to resume bot #{bot_id}: {e}", exc_info=True)
+            db.update_bot(bot_id, status="error", updated_at=datetime.now(timezone.utc))
 
     async def _create_default_bot(self):
         """Create the default 'Bot 1' from existing config file."""

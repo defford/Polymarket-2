@@ -283,6 +283,9 @@ class TradingEngine:
                 logger.error(f"Strategy loop error: {e}", exc_info=True)
                 self._status = BotStatus.ERROR
                 await asyncio.sleep(10)
+                # Reset status so bot can recover from transient errors
+                if self._running:
+                    self._status = BotStatus.RUNNING if self._cfg.config.mode == "live" else BotStatus.DRY_RUN
 
     async def _fast_risk_loop(self):
         logger.info("Entering fast risk loop")

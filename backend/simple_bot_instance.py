@@ -142,10 +142,16 @@ class SimpleBotInstance:
                 break
             except Exception as e:
                 consecutive_errors += 1
-                logger.error(f"Simple bot #{self.bot_id} cycle error ({consecutive_errors}): {e}")
+                logger.error(f"Simple bot #{self.bot_id} cycle error ({consecutive_errors}): {e}", exc_info=True)
                 if consecutive_errors >= max_consecutive_errors:
-                    logger.error(f"Simple bot #{self.bot_id} stopping due to repeated errors")
+                    logger.error(f"Simple bot #{self.bot_id} stopping due to {max_consecutive_errors} consecutive errors")
+                    self._running = False
                     self._state.status = BotStatus.ERROR
+                    # Update DB so the bot doesn't auto-resume in ERROR state
+                    try:
+                        db.update_bot(self.bot_id, status="error")
+                    except Exception:
+                        pass
                     break
                 await asyncio.sleep(5.0)
 
@@ -210,15 +216,20 @@ class SimpleBotInstance:
                 return
             elif existing_status in ("CANCELED", "KILLED", "REJECTED"):
                 self._current_order_id = None
-            elif existing_status == "OPEN":
+            elif existing_status in ("OPEN", "UNKNOWN"):
+                # UNKNOWN means API error checking status - treat as OPEN to avoid duplicates
                 time_remaining = await self._get_time_remaining(market)
                 if time_remaining and time_remaining < 30:
-                    await self._polymarket_client.cancel_order(self._current_order_id)
+                    try:
+                        await self._polymarket_client.cancel_order(self._current_order_id)
+                    except Exception:
+                        pass
                     self._current_order_id = None
                     return
                 await asyncio.sleep(POLL_INTERVAL)
                 return
-        else:
+
+        if not self._current_order_id:
             try:
                 resp = await self._polymarket_client.place_limit_order(
                     token_id=token_id,
@@ -336,15 +347,20 @@ class SimpleBotInstance:
                 return
             elif existing_status in ("CANCELED", "KILLED", "REJECTED"):
                 self._current_order_id = None
-            elif existing_status == "OPEN":
+            elif existing_status in ("OPEN", "UNKNOWN"):
+                # UNKNOWN means API error checking status - treat as OPEN to avoid duplicates
                 time_remaining = await self._get_time_remaining(market)
                 if time_remaining and time_remaining < 30:
-                    await self._polymarket_client.cancel_order(self._current_order_id)
+                    try:
+                        await self._polymarket_client.cancel_order(self._current_order_id)
+                    except Exception:
+                        pass
                     self._current_order_id = None
                     return
                 await asyncio.sleep(POLL_INTERVAL)
                 return
-        else:
+
+        if not self._current_order_id:
             try:
                 resp = await self._polymarket_client.place_limit_order(
                     token_id=position.token_id,
@@ -474,25 +490,31 @@ class SimpleBotInstance:
         if not self._current_position:
             return
 
+        position = self._current_position
+        sell_price = self.rule.sell_price
+        proceeds = sell_price * position.size
+        estimated_fee = proceeds * 0.02
+        net_proceeds = proceeds - estimated_fee
+        pnl = net_proceeds - position.cost
+
+        logger.info(
+            f"Bot #{self.bot_id} sell filled: {position.size:.2f} @ {sell_price:.2f} "
+            f"P&L=${pnl:+.2f}"
+        )
+
+        # Find the buy trade and update it with P&L
         trades = db.get_trades_for_market(market.condition_id)
         for trade in reversed(trades):
-            if trade.bot_id == self.bot_id and trade.status == OrderStatus.PENDING:
-                sell_price = self.rule.sell_price
-                proceeds = sell_price * self._current_position.size
-                estimated_fee = proceeds * 0.02
-                net_proceeds = proceeds - estimated_fee
-                pnl = net_proceeds - self._current_position.cost
-
+            if trade.bot_id == self.bot_id and trade.status == OrderStatus.FILLED and trade.pnl is None:
                 db.update_trade(trade.id, pnl=pnl, fees=estimated_fee, status="filled")
-
-                self._current_position = None
-                async with self._state_lock:
-                    self._state.open_positions = []
-                    self._state.recent_trades = [trade] + self._state.recent_trades[:9]
-
-                self._update_pnl()
-                await self._broadcast_state()
                 break
+
+        self._current_position = None
+        async with self._state_lock:
+            self._state.open_positions = []
+
+        self._update_pnl()
+        await self._broadcast_state()
 
     def _update_state_with_trade(self, trade: Trade):
         """Update bot state with a new trade."""
